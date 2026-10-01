@@ -1,0 +1,25 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# --- Artefak aplikasi (besar / spesifik pengguna) ---
+# Engine ncnn-Vulkan ±35-46 MB per engine; aplikasi mengunduhnya otomatis.
+tools/
+output/
+config.json
+
+# --- Log & file sementara ---
+*.log
+*.tmp
+
+# --- OS ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
