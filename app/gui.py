@@ -28,6 +28,7 @@ from .config import (
     APP_VERSION,
     ICON_ICO,
     ICON_PNG,
+    LOGO_PNG,
     OUTPUT_DIR,
     load_config,
     save_config,
@@ -108,6 +109,11 @@ C = {
     "sel": "#35507e",
 }
 
+# Logo header beranimasi: 44 px tampilan; 18 langkah per siklus 72°
+# (simetri 5 kelopak — siklus 72° terlihat sebagai satu putaran penuh).
+LOGO_PX = 44
+LOGO_STEPS = 18
+
 STATUS_TAGS = {
     "Selesai": "ok",
     "Gagal": "err",
@@ -157,6 +163,9 @@ class App:
         self.t_start = 0.0
         self._auto_start = False
         self._icon_photo = None
+        self._logo_frames: List[tk.PhotoImage] = []
+        self._logo_idx = 0
+        self._logo_static: Optional[tk.PhotoImage] = None
         self._thumb_cache: Dict[str, Dict[str, ImageTk.PhotoImage]] = {}
         self._placeholder_cache: Dict[tuple, ImageTk.PhotoImage] = {}
         self._thumb_q: "queue.Queue[tuple]" = queue.Queue()
@@ -249,6 +258,50 @@ class App:
                 self._icon_photo = photo  # cegah GC — PhotoImage harus tetap hidup
             except Exception:
                 pass
+
+    # ------------------------------------------------- logo header beranimasi
+
+    def _load_logo(self):
+        """Muat logo header & pra-render frame animasi putar dengan PIL.
+
+        Sumbernya master logo.png RGBA resolusi tinggi; tiap frame dirotasi
+        LANGSUNG dari master lalu diperkecil — kualitas penuh tanpa palet
+        GIF, jadi tidak ada artefak dithering/bintik. Langkah 4° memanfaatkan
+        simetri 5 kelopak: siklus 72° sudah putaran penuh secara visual dan
+        loop-nya mulus. Semua frame di-cache sebagai ImageTk.PhotoImage.
+        """
+        self._logo_frames = []
+        if LOGO_PNG.exists():
+            try:
+                master = Image.open(LOGO_PNG).convert("RGBA")
+                for i in range(LOGO_STEPS):
+                    frame = master.rotate(72.0 * i / LOGO_STEPS,
+                                          resample=Image.Resampling.BICUBIC)
+                    frame = frame.resize((LOGO_PX, LOGO_PX), Image.Resampling.LANCZOS)
+                    self._logo_frames.append(ImageTk.PhotoImage(frame))
+            except Exception:
+                self._logo_frames = []
+        if len(self._logo_frames) > 1:
+            self._logo_idx = 0
+            self._animate_logo()
+        elif self._logo_frames:
+            self.lbl_logo.configure(image=self._logo_frames[0])
+            self._logo_static = self._logo_frames[0]  # cegah GC
+
+    def _animate_logo(self):
+        """Putar frame logo via after(). Melaju lebih cepat saat antrean
+        berjalan (self.running) dan berhenti menggambar saat jendela
+        diminimize — timer tetap terjadwal supaya alurnya sederhana."""
+        iconic = False
+        try:
+            iconic = self.root.state() == "iconic"
+        except Exception:
+            pass
+        if len(self._logo_frames) > 1 and not iconic:
+            self.lbl_logo.configure(
+                image=self._logo_frames[self._logo_idx % len(self._logo_frames)])
+            self._logo_idx += 1
+        self.root.after(35 if self.running else 90, self._animate_logo)
 
     # ------------------------------------------------------------ UI
 
@@ -348,12 +401,18 @@ class App:
         head.columnconfigure(0, weight=1)
         left = ttk.Frame(head, style="Bg.TFrame")
         left.grid(row=0, column=0, sticky="w")
-        ttk.Label(left, text="🌸 WaifuUpscaler", style="Bg.TLabel",
+        # Logo bunga (beranimasi — lihat _load_logo); gambar diisi setelah ini.
+        self.lbl_logo = ttk.Label(left, style="Bg.TLabel")
+        self.lbl_logo.pack(side="left", padx=(0, 10))
+        textcol = ttk.Frame(left, style="Bg.TFrame")
+        textcol.pack(side="left")
+        ttk.Label(textcol, text="WaifuUpscaler", style="Bg.TLabel",
                   font=("Segoe UI", 17, "bold"), foreground=C["acc"]).pack(anchor="w")
-        ttk.Label(left, text="Upscale gambar anime di GPU (Vulkan) · waifu2x · Real-CUGAN · Real-ESRGAN",
+        ttk.Label(textcol, text="Upscale gambar anime di GPU (Vulkan) · waifu2x · Real-CUGAN · Real-ESRGAN",
                   style="BgMut.TLabel").pack(anchor="w")
         self.lbl_engines = ttk.Label(head, text="", style="BgMut.TLabel", justify="right")
         self.lbl_engines.grid(row=0, column=1, sticky="e")
+        self._load_logo()
 
     def _build_content(self):
         """Area yang bisa di-scroll: daftar gambar + pengaturan + log."""

@@ -15,6 +15,7 @@ CONFIG_PATH = ROOT_DIR / "config.json"
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"  # app/assets
 ICON_ICO = ASSETS_DIR / "icon.ico"   # jendela & taskbar Windows (multi-ukuran)
 ICON_PNG = ASSETS_DIR / "icon.png"   # fallback lintas platform (iconphoto)
+LOGO_PNG = ASSETS_DIR / "logo.png"   # master logo header RGBA (dianimasikan di gui)
 
 DEFAULTS = {
     "engine": "waifu2x",

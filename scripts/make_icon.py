@@ -5,6 +5,8 @@ Jalankan: .venv/Scripts/python.exe scripts/make_icon.py
 Output (aman dijalankan ulang, hasil deterministik):
   app/assets/icon.ico  — 16/24/32/48/64/128/256 px untuk window & taskbar Windows
   app/assets/icon.png  — 256 px untuk fallback lintas platform (iconphoto)
+  app/assets/logo.png  — bunga sakura RGBA transparan (master logo header GUI;
+                         frame animasi putar dirender saat aplikasi jalan)
 
 Palet mengikuti tema GUI di app/gui.py agar ikon menyatu dengan aplikasi.
 """
@@ -29,6 +31,10 @@ CORE = (255, 217, 125, 255)        # #ffd97d — inti bunga
 CORE_RING = (232, 184, 75, 255)    # #e8b84b
 GLOW = (130, 170, 255, 36)         # halo accent transparan
 SPARKLE = (255, 255, 255, 215)
+
+# Master logo header: 4x ukuran tampil di GUI (app/gui.py: LOGO_PX = 44)
+# supaya rotasi + penurunan skala di sisi aplikasi tetap tajam.
+LOGO_MASTER_PX = 176
 
 
 def _lerp(a: tuple, b: tuple, t: float) -> tuple:
@@ -63,11 +69,13 @@ def _petal() -> Image.Image:
     return layer
 
 
-def _flower() -> Image.Image:
+def _flower(extra_angle: float = 0.0) -> Image.Image:
+    """Bunga utuh; extra_angle memutarnya (derajat) untuk frame animasi."""
     flower = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     base = _petal()
     for i in range(5):
-        rot = base.rotate(72 * i, resample=Image.Resampling.BICUBIC, center=(CENTER, CENTER))
+        rot = base.rotate(72 * i + extra_angle, resample=Image.Resampling.BICUBIC,
+                          center=(CENTER, CENTER))
         flower = Image.alpha_composite(flower, rot)
     d = ImageDraw.Draw(flower)
     d.ellipse((CENTER - 136, CENTER - 136, CENTER + 136, CENTER + 136), fill=PETAL_DEEP)  # penutup celah
@@ -106,6 +114,19 @@ def build_icon() -> Image.Image:
     return img
 
 
+def _crop_flower(img: Image.Image) -> Image.Image:
+    """Potong jadi persegi pas di sekeliling bunga (dengan margin kecil).
+
+    Bunga berpusat di tengah kanvas dan simetris 5 kelopak, jadi kotak potong
+    yang sama berlaku untuk semua sudut rotasi.
+    """
+    l, t, r, b = img.getbbox()
+    pad = 26
+    half = max(CENTER - l, CENTER - t, r - CENTER, b - CENTER) + pad
+    return img.crop((round(CENTER - half), round(CENTER - half),
+                     round(CENTER + half), round(CENTER + half)))
+
+
 def main() -> None:
     out_dir = Path(__file__).resolve().parent.parent / "app" / "assets"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +138,12 @@ def main() -> None:
              sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     print(f"OK — {out_dir / 'icon.ico'}")
     print(f"OK — {out_dir / 'icon.png'}")
+
+    # --- logo header: bunga saja, tanpa panel (master RGBA transparan) ---
+    logo = _crop_flower(_flower()).resize(
+        (LOGO_MASTER_PX, LOGO_MASTER_PX), Image.Resampling.LANCZOS)
+    logo.save(out_dir / "logo.png")
+    print(f"OK — {out_dir / 'logo.png'} ({LOGO_MASTER_PX}px, RGBA)")
 
 
 if __name__ == "__main__":

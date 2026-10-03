@@ -5,6 +5,12 @@ Semua perubahan penting pada proyek ini akan didokumentasikan di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan versi mengikuti [Semantic Versioning](https://semver.org/lang/id/).
 
+## [1.4.0] - 2026-10-03
+
+### Ditambahkan
+
+- **Logo aplikasi di header, beranimasi** — emoji 🌸 pada judul diganti logo bunga sakura asli aplikasi. Bunga **berputar terus-menerus** di header dan **melaju lebih cepat selama proses upscale berjalan**, berhenti menggambar saat jendela diminimize (hemat CPU). Framanya dirender saat aplikasi jalan dari master `app/assets/logo.png` (RGBA resolusi tinggi, dirotasi PIL) — bukan GIF — sehingga bebas artefak bintik palet. Aset dibuat ulang via `python scripts/make_icon.py`.
+
 ## [1.3.0] - 2026-10-03
 
 ### Ditambahkan
