@@ -5,6 +5,14 @@ Semua perubahan penting pada proyek ini akan didokumentasikan di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan versi mengikuti [Semantic Versioning](https://semver.org/lang/id/).
 
+## [1.3.0] - 2026-10-03
+
+### Ditambahkan
+
+- **Collapse/uncollapse section** — panel **Daftar Gambar**, **Pengaturan**, dan **Log** bisa dilipat/bentangkan lewat strip judul masing-masing (chevron ▾/▸); saat dilipat hanya strip judul yang tampil, section di bawahnya **otomatis naik mengisi ruang**, dan posisi grid tiap panel diingat saat di-expand kembali.
+- **Mode tampilan daftar gambar** — seperti menu View di Windows Explorer: **Detail**, **Ikon Kecil**, **Ikon Sedang**, **Ikon Besar**, dan **Ikon Ekstra Besar**. Thumbnail gambar tampil di daftar berdampingan dengan nama file; pilihan tersimpan otomatis di config.
+- Thumbnail dibuat di **background thread** (UI tetap responsif), menghormati **orientasi EXIF** kamera, memakai placeholder saat dimuat, dan file yang gagal dibaca ditampilkan sebagai kotak placeholder.
+
 ## [1.2.0] - 2026-10-03
 
 ### Ditambahkan

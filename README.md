@@ -12,6 +12,8 @@
 ## ✨ Sekilas Fitur
 
 - 🖱️ **Drag & drop** gambar atau folder (bisa rekursif) ke jendela
+- 🖼️ **Mode tampilan daftar gambar** — Detail / Ikon Kecil / Sedang / Besar / Ekstra Besar ala Windows Explorer: thumbnail tampil di daftar, nama file tetap terlihat
+- 🗂️ **Section bisa dilipat** — panel **Daftar Gambar**, **Pengaturan**, dan **Log** di-collapse/expand lewat strip judulnya (chevron ▾/▸); section di bawahnya otomatis naik mengisi ruang
 - 🌸 **Ikon aplikasi kustom** (sakura) di title bar & taskbar — aset `.ico` multi-ukuran, bisa dibuat ulang via `scripts/make_icon.py`
 - ⚙️ 3 engine + model **anime & foto** — opsi dipindai otomatis dari folder `tools/`
 - 🔍 Skala 1x–4x, level denoise tersinkron otomatis dengan skala & model terpilih

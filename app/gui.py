@@ -21,7 +21,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 from .config import (
     APP_NAME,
@@ -58,6 +58,19 @@ except Exception:  # pragma: no cover - fallback tanpa drag & drop
     HAS_DND_LIB = False
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
+
+# --- Mode tampilan daftar gambar (meniru menu View di Windows Explorer) ---
+VIEW_LABELS = {  # key config -> label combobox (urutan dict = urutan tampil)
+    "detail": "Detail",
+    "small": "Ikon Kecil",
+    "medium": "Ikon Sedang",
+    "large": "Ikon Besar",
+    "xlarge": "Ikon Ekstra Besar",
+}
+VIEW_PX = {"small": 32, "medium": 64, "large": 128, "xlarge": 256}      # sisi thumbnail
+VIEW_ROW = {"detail": 26, "small": 46, "medium": 86, "large": 152, "xlarge": 280}
+VIEW_COL0 = {"small": 290, "medium": 350, "large": 500, "xlarge": 680}  # lebar kolom nama+gambar
+VIEW_H = {"detail": 8, "small": 6, "medium": 4, "large": 3, "xlarge": 2}  # jumlah baris minimum
 
 FORMAT_LABELS = {
     "PNG · lossless, dukung transparan": "png",
@@ -144,6 +157,15 @@ class App:
         self.t_start = 0.0
         self._auto_start = False
         self._icon_photo = None
+        self._thumb_cache: Dict[str, Dict[str, ImageTk.PhotoImage]] = {}
+        self._placeholder_cache: Dict[tuple, ImageTk.PhotoImage] = {}
+        self._thumb_q: "queue.Queue[tuple]" = queue.Queue()
+        self._thumb_gen = 0
+        self._thumb_worker_started = False
+        self._section_header: Dict[str, ttk.Frame] = {}
+        self._section_chev: Dict[str, ttk.Label] = {}
+        self._section_body: Dict[str, ttk.Widget] = {}
+        self._collapsed: Dict[str, bool] = {}
         self.dl_win: Optional[tk.Toplevel] = None
         self._gpu_cache: Dict[str, list] = {}
         self._gpu_running: Dict[str, bool] = {}
@@ -169,6 +191,7 @@ class App:
         self._build_queue()
         self._build_settings()
         self._build_log()
+        self._relayout_section_weights()  # baris fleksibel bawaan: Daftar Gambar
         self._build_footer()
         self._bind_dnd()
         self._restore_settings()
@@ -176,6 +199,7 @@ class App:
         self._refresh_engine_status()
         self._update_counts()
         self._update_check_state()
+        self._apply_view_mode()
 
         root.bind_all("<MouseWheel>", self._on_mousewheel)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -230,6 +254,7 @@ class App:
 
     def _build_styles(self):
         st = ttk.Style(self.root)
+        self._style = st  # referensi untuk mengubah rowheight saat ganti mode tampilan
         st.theme_use("clam")
         st.configure(".", background=C["panel"], foreground=C["fg"], bordercolor=C["border"],
                      lightcolor=C["panel"], darkcolor=C["panel"], troughcolor=C["field"],
@@ -239,6 +264,10 @@ class App:
         st.configure("Bg.TLabel", background=C["bg"], foreground=C["fg"])
         st.configure("Mut.TLabel", background=C["panel"], foreground=C["mut"])
         st.configure("BgMut.TLabel", background=C["bg"], foreground=C["mut"])
+        st.configure("Section.TLabel", background=C["panel"], foreground=C["acc"],
+                     font=("Segoe UI", 9, "bold"))
+        st.configure("Chevron.TLabel", background=C["panel"], foreground=C["acc"],
+                     font=("Segoe UI", 10, "bold"), width=3, anchor="center")
         st.configure("Acc.TLabel", background=C["panel"], foreground=C["acc"])
         st.configure("TLabel", background=C["panel"], foreground=C["fg"])
         st.configure("TLabelframe", background=C["panel"], bordercolor=C["border"], relief="solid")
@@ -311,6 +340,7 @@ class App:
         self.var_skip = tk.BooleanVar(value=True)
         self.var_auto_open = tk.BooleanVar(value=False)
         self.var_check_all = tk.BooleanVar(value=False)
+        self.var_view = tk.StringVar(value=VIEW_LABELS["detail"])
 
     def _build_header(self):
         head = ttk.Frame(self.root, style="Bg.TFrame")
@@ -340,17 +370,40 @@ class App:
 
         self.content = ttk.Frame(self.canvas, style="Bg.TFrame")
         self.content.columnconfigure(0, weight=1)
-        self.content.rowconfigure(0, weight=1)  # daftar gambar yang melar
+        # Baris body yang melar diatur dinamis oleh _relayout_section_weights():
+        # hanya section yang sedang terbuka yang mengisi sisa ruang, supaya
+        # section lain tidak tertinggal/terdorong ke bawah saat ada yang
+        # dilipat. grid_anchor "nw" membuat konten menempel atas saat tidak
+        # ada baris yang melar (mis. semua section dilipat).
+        self.content.grid_anchor("nw")
         self._content_win = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
 
         self.content.bind("<Configure>", self._on_content_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
 
     def _on_canvas_configure(self, event):
-        # Konten selalu selebar canvas (agar layout ikut saat maximize),
-        # dan minimal setinggi canvas (agar daftar gambar ikut memanjang).
-        height = max(event.height, self.content.winfo_reqheight())
-        self.canvas.itemconfigure(self._content_win, width=event.width, height=height)
+        self._sync_content_size(width=event.width, height=event.height)
+
+    def _sync_content_size(self, width: Optional[int] = None,
+                           height: Optional[int] = None, refresh: bool = False):
+        """Selaraskan ukuran jendela konten di dalam canvas: selebar canvas
+        (agar layout ikut saat maximize) dan minimal setinggi canvas — atau
+        lebih tinggi bila konten butuh ruang (muncul scrollbar).
+
+        Wajib dipanggil ulang setiap tinggi konten berubah — collapse/expand
+        section dan ganti mode tampilan (refresh=True agar reqheight dihitung
+        ulang dulu) — supaya sisa ruang tidak tertinggal sebagai celah kosong
+        yang mendorong section di bawahnya keluar dari layar.
+        """
+        try:
+            if refresh:
+                self.content.update_idletasks()  # hitung ulang reqheight dulu
+            w = width or self.canvas.winfo_width()
+            h = max(height or self.canvas.winfo_height(), self.content.winfo_reqheight())
+            self.canvas.itemconfigure(self._content_win, width=w, height=h)
+            self._sync_scrollbar()
+        except Exception:
+            pass
 
     def _on_content_configure(self, _event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -380,9 +433,67 @@ class App:
             return
         self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
 
+    # ---------------------------------------------- section collapse/expand
+
+    def _make_section(self, parent, key: str, title: str) -> ttk.Widget:
+        """Buat pasangan section: header strip (chevron + judul — selalu tampil)
+        + body Labelframe yang di-grid_remove SELURUHNYA saat di-collapse
+        (bukan cuma isiannya) sehingga saat lipat yang tersisa hanya judul.
+
+        Return body-nya; header bisa diakses lewat self._section_header[key].
+        """
+        header = ttk.Frame(parent)
+        chev = ttk.Label(header, text="▾", style="Chevron.TLabel", cursor="hand2")
+        ttl = ttk.Label(header, text=f" {title}", style="Section.TLabel", cursor="hand2")
+        chev.pack(side="left", padx=(4, 0))
+        ttl.pack(side="left", padx=(0, 6))
+        for w in (header, chev, ttl):
+            w.bind("<Button-1>", lambda _e, k=key: self._toggle_section(k))
+        lf = ttk.Labelframe(parent)
+        self._section_header[key] = header
+        self._section_chev[key] = chev
+        self._section_body[key] = lf
+        self._collapsed[key] = False
+        return lf
+
+    def _toggle_section(self, key: str):
+        """Lipat/bentangkan satu section: body di-grid_remove() SELURUHNYA
+        (bukan cuma isinya), lalu baris fleksibel & tinggi konten dirapikan."""
+        collapsed = not self._collapsed.get(key, False)
+        self._collapsed[key] = collapsed
+        self._section_chev[key].configure(text="▸" if collapsed else "▾")
+        body = self._section_body[key]
+        if collapsed:
+            body.grid_remove()
+        else:
+            body.grid()
+        self._relayout_section_weights()
+        self._sync_content_size(refresh=True)
+
+    def _relayout_section_weights(self):
+        """Pindahkan baris grid yang melar ke panel fleksibel yang masih terbuka.
+
+        Prioritas: Daftar Gambar dulu, kalau sedang dilipat baru Log — jadi
+        selalu ada satu panel fleksibel yang meregang mengisi sisa ruang.
+        Panel yang dilipat tidak menyisakan celah, dan tidak ada baris kosong
+        ber-weight yang menyerap ruang lalu mendorong panel lain keluar layar.
+        Bila keduanya dilipat, tidak ada baris yang melar dan konten menempel
+        atas lewat grid_anchor "nw". Pengaturan tidak pernah melar karena
+        tingginya memang tetap.
+        """
+        rows = {"queue": 1, "settings": 3, "log": 5}
+        flex_key = None
+        for key in ("queue", "log"):
+            if not self._collapsed.get(key, False):
+                flex_key = key
+                break
+        for key, row in rows.items():
+            self.content.rowconfigure(row, weight=1 if key == flex_key else 0)
+
     def _build_queue(self):
-        lf = ttk.Labelframe(self.content, text=" Daftar Gambar ")
-        lf.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 6))
+        lf = self._make_section(self.content, "queue", "Daftar Gambar")
+        self._section_header["queue"].grid(row=0, column=0, sticky="ew")
+        lf.grid(row=1, column=0, sticky="nsew", padx=0, pady=(0, 6))
         lf.rowconfigure(0, weight=1)
         lf.columnconfigure(0, weight=1)
 
@@ -392,6 +503,7 @@ class App:
         wrap.columnconfigure(0, weight=1)
 
         self.tree = ttk.Treeview(wrap, columns=("chk", "file", "status", "info"), show="headings",
+                                 displaycolumns=("chk", "file", "status", "info"),
                                  selectmode="extended", height=8)
         self.tree.heading("chk", text="☐", anchor="center")
         self.tree.heading("file", text="Nama File")
@@ -437,14 +549,25 @@ class App:
                                              command=self._remove_checked, state="disabled")
         self.btn_remove_checked.pack(side="left", padx=(10, 0))
         ttk.Button(btns2, text="🧹 Bersihkan Daftar", command=self._clear_all).pack(side="left", padx=(6, 0))
+        vf = ttk.Frame(btns2)
+        vf.pack(side="right")
+        ttk.Label(vf, text="Tampilan:").pack(side="left")
+        self.cb_view = ttk.Combobox(vf, textvariable=self.var_view, state="readonly", width=19,
+                                    values=[VIEW_LABELS[k] for k in VIEW_LABELS])
+        self.cb_view.pack(side="left", padx=(6, 0))
+        self.cb_view.bind("<<ComboboxSelected>>", lambda _e: self._apply_view_mode())
 
         self.tree.bind("<Double-1>", self._on_tree_double)
         self.tree.bind("<Button-3>", self._on_tree_menu)
         self.tree.bind("<Button-1>", self._on_tree_click, add="+")
 
     def _build_settings(self):
-        wrap = ttk.Frame(self.content, style="Bg.TFrame")
-        wrap.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        lf = self._make_section(self.content, "settings", "Pengaturan")
+        self._section_header["settings"].grid(row=2, column=0, sticky="ew")
+        lf.grid(row=3, column=0, sticky="nsew", pady=(0, 6))
+        lf.columnconfigure(0, weight=1)
+        wrap = ttk.Frame(lf)
+        wrap.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 8))
         for i in range(3):
             wrap.columnconfigure(i, weight=1, uniform="setcol")
 
@@ -543,8 +666,9 @@ class App:
         self.cb_format.bind("<<ComboboxSelected>>", lambda _e: self._on_outmode())
 
     def _build_log(self):
-        lf = ttk.Labelframe(self.content, text=" Log ")
-        lf.grid(row=2, column=0, sticky="nsew")
+        lf = self._make_section(self.content, "log", "Log")
+        self._section_header["log"].grid(row=4, column=0, sticky="ew")
+        lf.grid(row=5, column=0, sticky="nsew")
         lf.columnconfigure(0, weight=1)
         lf.rowconfigure(1, weight=1)
         hdr = ttk.Frame(lf)
@@ -602,6 +726,7 @@ class App:
         self.var_subfolders.set(bool(c.get("subfolders", True)))
         self.var_skip.set(bool(c.get("skip_existing", True)))
         self.var_auto_open.set(bool(c.get("auto_open", False)))
+        self.var_view.set(VIEW_LABELS.get(c.get("view_mode", "detail"), "Detail"))
         fmt = c.get("format", "png")
         for label, key in FORMAT_LABELS.items():
             if key == fmt:
@@ -772,6 +897,7 @@ class App:
             "subfolders": bool(self.var_subfolders.get()),
             "skip_existing": bool(self.var_skip.get()),
             "auto_open": bool(self.var_auto_open.get()),
+            "view_mode": self._view_key(),
         })
         self.cfg[f"model_{key}"] = mid
         return self.cfg
@@ -827,8 +953,10 @@ class App:
                     continue
                 self.items[s] = {"status": "Menunggu", "out": None, "checked": False}
                 self.order.append(s)
-                self.tree.insert("", "end", iid=s,
+                self.tree.insert("", "end", iid=s, text=f.name,
                                  values=("☐", f.name, "Menunggu", _fmt_size(f)), tags=("fg",))
+                if self._view_key() != "detail":
+                    self._ensure_thumb(s, self._view_key())
                 added += 1
         if added:
             self.ph_label.place_forget()
@@ -856,6 +984,7 @@ class App:
                 continue
             self.tree.delete(iid)
             self.items.pop(iid, None)
+            self._thumb_cache.pop(iid, None)
             self.order = [s for s in self.order if s != iid]
             removed += 1
         if not self.order:
@@ -912,14 +1041,34 @@ class App:
         target = not all(self.items.get(s, {}).get("checked") for s in self.order)
         self._set_all_checked(target)
 
+    def _column_name(self, col_id: str) -> Optional[str]:
+        """Terjemahkan id kolom tampilan ('#0', '#1', ...) ke nama kolom.
+
+        identify_column mengembalikan urutan TAMPILAN — di mode ikon sebagian
+        kolom disembunyikan, jadi '#1' dipetakan lewat displaycolumns agar
+        selalu mengenai kolom yang benar (mis. kolom centang).
+        """
+        if not col_id:
+            return None
+        if col_id == "#0":
+            return "#0"
+        try:
+            idx = int(col_id[1:]) - 1
+        except ValueError:
+            return None
+        disp = self.tree.cget("displaycolumns")
+        cols = tuple(disp) if not isinstance(disp, str) else ("chk", "file", "status", "info")
+        return cols[idx] if 0 <= idx < len(cols) else None
+
     def _on_tree_click(self, event):
         region = self.tree.identify_region(event.x, event.y)
+        name = self._column_name(self.tree.identify_column(event.x))
         if region == "heading":
-            if self.tree.identify_column(event.x) == "#1":
+            if name == "chk":
                 self._toggle_all_from_heading()
                 return "break"
             return
-        if region != "cell" or self.tree.identify_column(event.x) != "#1":
+        if region != "cell" or name != "chk":
             return
         iid = self.tree.identify_row(event.y)
         info = self.items.get(iid)
@@ -947,6 +1096,8 @@ class App:
         self.order.clear()
         self.results.clear()
         self.produced.clear()
+        self._thumb_cache.clear()
+        self._thumb_gen += 1  # buang tugas thumbnail yang masih mengantre
         self.ph_label.place(relx=0.5, rely=0.45, anchor="center")
         self._update_counts()
         self._update_check_state()
@@ -965,6 +1116,100 @@ class App:
         tag = "acc" if base.startswith("Memproses") else STATUS_TAGS.get(base, "fg")
         self.tree.set(path_str, "status", status)
         self.tree.item(path_str, tags=(tag,))
+
+    # ------------------------------------------ tampilan daftar & thumbnail
+
+    def _view_key(self) -> str:
+        for key, label in VIEW_LABELS.items():
+            if self.var_view.get() == label:
+                return key
+        return "detail"
+
+    def _set_row_height(self, px: int):
+        self._style.configure("Treeview", rowheight=px)
+
+    def _apply_view_mode(self):
+        """Terapkan mode tampilan daftar: Detail (teks) atau ikon + thumbnail.
+
+        Mode ikon menampilkan thumbnail di kolom tree (#0) berdampingan dengan
+        nama file; sebagian kolom disembunyikan agar mirip Windows Explorer.
+        """
+        key = self._view_key()
+        self._thumb_gen += 1  # buang hasil thumbnail yang masih mengantre
+        if key == "detail":
+            self.tree.configure(show="headings",
+                                displaycolumns=("chk", "file", "status", "info"))
+            self._set_row_height(VIEW_ROW["detail"])
+            self.tree.configure(height=VIEW_H["detail"])
+            for iid in self.tree.get_children():
+                if self.tree.exists(iid):
+                    self.tree.item(iid, image="")
+            self._update_check_state()
+            self._sync_content_size(refresh=True)  # tinggi konten ikut berubah
+            return
+        self.tree.configure(show="tree",
+                            displaycolumns=("chk", "status") if key in ("large", "xlarge")
+                            else ("chk", "status", "info"))
+        self._set_row_height(VIEW_ROW[key])
+        self.tree.configure(height=VIEW_H[key])
+        self.tree.column("#0", width=VIEW_COL0[key],
+                         minwidth=VIEW_PX[key] + 100, stretch=True)
+        self.tree.heading("#0", text="Gambar")
+        self._ensure_all_thumbs(key)
+        self._update_check_state()
+        self._sync_content_size(refresh=True)  # tinggi konten ikut berubah
+
+    def _placeholder_photo(self, size_key: str, failed: bool = False):
+        """Placeholder kotak abu-abu; versi kemerahan bila gambar gagal dimuat."""
+        ck = (size_key, failed)
+        ph = self._placeholder_cache.get(ck)
+        if ph is None:
+            px = VIEW_PX[size_key]
+            img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            d.rounded_rectangle(
+                (0, 0, px - 1, px - 1), radius=max(3, px // 8), width=max(1, px // 32),
+                fill=(74, 52, 56, 255) if failed else (44, 49, 63, 255),
+                outline=(190, 100, 100, 255) if failed else (110, 122, 148, 255))
+            ph = ImageTk.PhotoImage(img)
+            self._placeholder_cache[ck] = ph
+        return ph
+
+    def _ensure_thumb(self, path_str: str, size_key: str):
+        """Tampilkan thumbnail dari cache, atau jadwalkan pembuatannya di background."""
+        cached = self._thumb_cache.get(path_str, {}).get(size_key)
+        if cached is not None:
+            if self.tree.exists(path_str):
+                self.tree.item(path_str, image=cached)
+            return
+        if self.tree.exists(path_str):
+            self.tree.item(path_str, image=self._placeholder_photo(size_key))
+        if not self._thumb_worker_started:
+            self._thumb_worker_started = True
+            threading.Thread(target=self._thumb_worker, daemon=True).start()
+        self._thumb_q.put((self._thumb_gen, path_str, size_key))
+
+    def _ensure_all_thumbs(self, size_key: str):
+        for path_str in self.order:
+            self._ensure_thumb(path_str, size_key)
+
+    def _thumb_worker(self):
+        """Background thread: dekode & kecilkan gambar via PIL, lalu kirim hasilnya
+        ke UI thread — PhotoImage wajib dibuat di thread utama (Tk tidak thread-safe)."""
+        while True:
+            gen, path_str, size_key = self._thumb_q.get()
+            if gen != self._thumb_gen:
+                continue  # mode berubah / daftar dibersihkan — buang tugas lama
+            px = VIEW_PX[size_key]
+            try:
+                with Image.open(path_str) as im:
+                    im.draft("RGB", (px, px))  # percepat decode JPEG beresolusi besar
+                    im = ImageOps.exif_transpose(im)
+                    im.thumbnail((px, px), Image.Resampling.LANCZOS)
+                    pil = im.convert("RGBA")
+            except Exception:
+                pil = None  # file rusak/terkunci → tampilkan placeholder
+            self.ui_q.put(("thumb", gen, path_str, size_key, pil))
 
     # ------------------------------------------------------------- proses
 
@@ -1192,6 +1437,16 @@ class App:
                 self._update_counts()
         elif kind == "log":
             self._log(msg[1], msg[2])
+        elif kind == "thumb":
+            _, gen, path_str, size_key, pil = msg
+            if gen == self._thumb_gen and path_str in self.items:
+                photo = (ImageTk.PhotoImage(pil) if pil is not None
+                         else self._placeholder_photo(size_key, failed=True))
+                self._thumb_cache.setdefault(path_str, {})[size_key] = photo
+                if self._view_key() == size_key and self.tree.exists(path_str):
+                    self.tree.item(path_str, image=photo)
+                if pil is None:
+                    self._log(f"⚠ Thumbnail gagal dibuat: {Path(path_str).name}", "mut")
         elif kind == "gpus":
             _, exe_key, pairs = msg
             self._gpu_cache[exe_key] = pairs
@@ -1268,7 +1523,7 @@ class App:
 
     def _on_tree_double(self, event):
         if (self.tree.identify_region(event.x, event.y) == "cell"
-                and self.tree.identify_column(event.x) == "#1"):
+                and self._column_name(self.tree.identify_column(event.x)) == "chk"):
             return  # klik ganda di kolom centang bukan aksi pratinjau
         if not self.order:
             self._pick_files()

@@ -25,6 +25,8 @@ Untuk ringkasan singkat lihat [README](../README.md); untuk riwayat versi lihat 
 - 📊 Progres keseluruhan antrean, statistik, tombol **Batalkan** kapan saja.
 - ☑️ **Checkbox per gambar**: tandai beberapa gambar (atau **Pilih Semua** / klik header kolom ☐) lalu tekan **🗑 Hapus Tercentang** untuk menghapus sekaligus. Tombol **🧹 Bersihkan Daftar** mengosongkan seluruh antrean, **🧹 Bersihkan Log** mengosongkan panel log. Gambar yang sedang diproses selalu dilindungi dari penghapusan.
 - 🖼️ Pratinjau sebelum/sesudah: zoom Ctrl+scroll, pan, tombol Fit.
+- 🗂️ **Mode tampilan daftar** (dropdown *Tampilan:* di toolbar): Detail, Ikon Kecil, Ikon Sedang, Ikon Besar, Ikon Ekstra Besar — thumbnail gambar tampil berdampingan dengan nama filenya, pilihan tersimpan otomatis.
+- 🗂️ **Section bisa dilipat**: klik strip judul **Daftar Gambar**, **Pengaturan**, atau **Log** untuk collapse/expand (chevron ▾/▸). Saat satu section dilipat, section di bawahnya otomatis naik mengisi ruang kosongnya.
 - 📂 Output ke folder asal (dengan akhiran nama) atau folder khusus; opsi lewati file yang sudah ada; dua sumber bernama sama otomatis diberi akhiran ` (2)`.
 - 💾 Ukuran jendela & semua pengaturan tersimpan otomatis di `config.json`.
 - 🌸 Ikon aplikasi kustom (sakura) di title bar & taskbar — bisa dibuat ulang via `python scripts/make_icon.py`.

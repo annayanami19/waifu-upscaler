@@ -37,6 +37,7 @@ DEFAULTS = {
     "window_w": 1150,         # ukuran & posisi jendela terakhir
     "window_h": 820,
     "window_zoomed": False,
+    "view_mode": "detail",    # tampilan daftar: detail | small | medium | large | xlarge
 }
 
 
