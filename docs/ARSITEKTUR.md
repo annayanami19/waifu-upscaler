@@ -35,7 +35,10 @@ app/
 ├── engines.py      ← spesifikasi engine, scan model, validasi, eksekusi
 ├── downloader.py   ← unduh & ekstrak zip engine dari GitHub Releases
 ├── gui.py          ├── seluruh UI (tkinter, ttk clam, tema gelap)
+├── assets/         ← icon.ico (multi-ukuran 16–256 px) + icon.png (fallback)
 └── main.py         ← entry point (python -m app.main)
+scripts/
+└── make_icon.py    ← generator aset ikon (Pillow) — hasil deterministik
 ```
 
 ## Alur Satu File

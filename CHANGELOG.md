@@ -5,6 +5,23 @@ Semua perubahan penting pada proyek ini akan didokumentasikan di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan versi mengikuti [Semantic Versioning](https://semver.org/lang/id/).
 
+## [1.2.0] - 2026-10-03
+
+### Ditambahkan
+
+- **Ikon aplikasi kustom** (bunga sakura) untuk title bar, taskbar, dan Alt-Tab — tidak lagi memakai ikon Python bawaan. Aset di `app/assets/` (`.ico` multi-ukuran 16–256 px + `.png` fallback), dibuat ulang dengan `python scripts/make_icon.py`.
+- **Checkbox per gambar** di kolom paling kiri daftar — klik untuk menandai gambar yang ingin dihapus, lalu hapus semuanya sekaligus lewat tombol **🗑 Hapus Tercentang (N)** (sebelumnya hanya bisa hapus satu per satu).
+- **Pilih Semua**: centang/lepas semua gambar sekaligus lewat checkbox di toolbar atau klik header kolom ☐ (menampilkan ▣ saat sebagian tercentang).
+- **Bersihkan Daftar**: tombol untuk mengosongkan seluruh daftar gambar sekali klik (dipindah ke toolbar daftar gambar).
+- **Bersihkan Log**: tombol untuk mengosongkan panel log.
+- Menu klik-kanan kini punya aksi **Centang / Lepas centang pilihan**.
+
+### Diperbaiki
+
+- **Worker crash saat item dihapus dari daftar** ketika antrean sedang berjalan (`KeyError` karena item tidak lagi ada di daftar) — kini item yang sudah dihapus otomatis dilewati dengan aman.
+- Hapus borongan melindungi gambar yang **sedang diproses** — item itu dilewati dan jumlahnya diberitahukan di log.
+- Klik ganda di kolom centang tidak lagi memicu aksi pratinjau.
+
 ## [1.1.0] - 2026-10-01
 
 ### Ditambahkan

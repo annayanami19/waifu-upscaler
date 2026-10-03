@@ -5,4 +5,4 @@ Konstanta di sini adalah SATU-SATUNYA sumber versi (diimpor oleh app.config).
 """
 
 APP_NAME = "WaifuUpscaler"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"

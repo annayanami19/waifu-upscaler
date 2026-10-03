@@ -12,6 +12,10 @@ TOOLS_DIR = ROOT_DIR / "tools"
 OUTPUT_DIR = ROOT_DIR / "output"
 CONFIG_PATH = ROOT_DIR / "config.json"
 
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"  # app/assets
+ICON_ICO = ASSETS_DIR / "icon.ico"   # jendela & taskbar Windows (multi-ukuran)
+ICON_PNG = ASSETS_DIR / "icon.png"   # fallback lintas platform (iconphoto)
+
 DEFAULTS = {
     "engine": "waifu2x",
     "model_waifu2x": "models-cunet",

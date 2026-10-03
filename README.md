@@ -12,9 +12,11 @@
 ## ✨ Sekilas Fitur
 
 - 🖱️ **Drag & drop** gambar atau folder (bisa rekursif) ke jendela
+- 🌸 **Ikon aplikasi kustom** (sakura) di title bar & taskbar — aset `.ico` multi-ukuran, bisa dibuat ulang via `scripts/make_icon.py`
 - ⚙️ 3 engine + model **anime & foto** — opsi dipindai otomatis dari folder `tools/`
 - 🔍 Skala 1x–4x, level denoise tersinkron otomatis dengan skala & model terpilih
 - 📦 Batch queue + progres, output PNG / JPG / WebP, folder output fleksibel
+- ☑️ Checkbox per gambar + **Pilih Semua** — hapus banyak gambar sekaligus; tombol **Bersihkan Daftar** & **Bersihkan Log**
 - 🖼️ Pratinjau **sebelum/sesudah** dengan zoom (Ctrl+scroll) & pan
 
 ## 🚀 Mulai Cepat

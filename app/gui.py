@@ -11,6 +11,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -22,7 +23,15 @@ from typing import Dict, List, Optional
 
 from PIL import Image, ImageTk
 
-from .config import APP_NAME, APP_VERSION, OUTPUT_DIR, load_config, save_config
+from .config import (
+    APP_NAME,
+    APP_VERSION,
+    ICON_ICO,
+    ICON_PNG,
+    OUTPUT_DIR,
+    load_config,
+    save_config,
+)
 from .downloader import DownloadCancelled, download_zip
 from .engines import (
     ENGINES,
@@ -134,6 +143,7 @@ class App:
         self.running = False
         self.t_start = 0.0
         self._auto_start = False
+        self._icon_photo = None
         self.dl_win: Optional[tk.Toplevel] = None
         self._gpu_cache: Dict[str, list] = {}
         self._gpu_running: Dict[str, bool] = {}
@@ -150,6 +160,7 @@ class App:
         root.rowconfigure(1, weight=1)  # hanya area konten yang melar
 
         self._apply_geometry()
+        self._apply_icon()
 
         self._build_styles()
         self._build_vars()
@@ -164,6 +175,7 @@ class App:
         self._engine_changed()
         self._refresh_engine_status()
         self._update_counts()
+        self._update_check_state()
 
         root.bind_all("<MouseWheel>", self._on_mousewheel)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -190,6 +202,29 @@ class App:
             self.root.state("zoomed")
         except Exception:
             pass
+
+    def _apply_icon(self):
+        """Ikon aplikasi untuk title bar & taskbar.
+
+        Windows: icon.ico multi-ukuran via iconbitmap(-default) — berlaku juga
+        untuk semua Toplevel (pratinjau, dialog unduhan). iconphoto TIDAK
+        dipakai di Windows karena menimpa .ico (lihat man page wm).
+        Fallback lintas platform: icon.png via iconphoto.
+        Kegagalan tidak boleh menghalangi aplikasi jalan.
+        """
+        if sys.platform == "win32" and ICON_ICO.exists():
+            try:
+                self.root.iconbitmap(default=str(ICON_ICO))
+                return
+            except Exception:
+                pass
+        if ICON_PNG.exists():
+            try:
+                photo = tk.PhotoImage(file=str(ICON_PNG))
+                self.root.iconphoto(True, photo)
+                self._icon_photo = photo  # cegah GC — PhotoImage harus tetap hidup
+            except Exception:
+                pass
 
     # ------------------------------------------------------------ UI
 
@@ -275,6 +310,7 @@ class App:
         self.var_subfolders = tk.BooleanVar(value=True)
         self.var_skip = tk.BooleanVar(value=True)
         self.var_auto_open = tk.BooleanVar(value=False)
+        self.var_check_all = tk.BooleanVar(value=False)
 
     def _build_header(self):
         head = ttk.Frame(self.root, style="Bg.TFrame")
@@ -355,11 +391,13 @@ class App:
         wrap.rowconfigure(0, weight=1)
         wrap.columnconfigure(0, weight=1)
 
-        self.tree = ttk.Treeview(wrap, columns=("file", "status", "info"), show="headings",
+        self.tree = ttk.Treeview(wrap, columns=("chk", "file", "status", "info"), show="headings",
                                  selectmode="extended", height=8)
+        self.tree.heading("chk", text="☐", anchor="center")
         self.tree.heading("file", text="Nama File")
         self.tree.heading("status", text="Status")
         self.tree.heading("info", text="Ukuran / Keterangan")
+        self.tree.column("chk", width=40, minwidth=40, anchor="center", stretch=False)
         self.tree.column("file", width=430, anchor="w")
         self.tree.column("status", width=180, anchor="w", stretch=False)
         self.tree.column("info", width=260, anchor="w")
@@ -383,15 +421,26 @@ class App:
         self.ph_label.bind("<Double-1>", lambda _e: self._pick_files())
 
         btns = ttk.Frame(lf)
-        btns.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        btns.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
         ttk.Button(btns, text="＋ Tambah File", command=self._pick_files).pack(side="left")
         ttk.Button(btns, text="📁 Tambah Folder", command=self._pick_folder).pack(side="left", padx=(6, 0))
         ttk.Button(btns, text="✖ Hapus Pilihan", command=self._remove_selected).pack(side="left", padx=(6, 0))
         self.lbl_count = ttk.Label(btns, text="", style="Mut.TLabel")
         self.lbl_count.pack(side="right")
 
+        btns2 = ttk.Frame(lf)
+        btns2.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self.chk_all = ttk.Checkbutton(btns2, text="Pilih Semua", variable=self.var_check_all,
+                                       command=self._toggle_check_all)
+        self.chk_all.pack(side="left")
+        self.btn_remove_checked = ttk.Button(btns2, text="🗑 Hapus Tercentang (0)", style="Danger.TButton",
+                                             command=self._remove_checked, state="disabled")
+        self.btn_remove_checked.pack(side="left", padx=(10, 0))
+        ttk.Button(btns2, text="🧹 Bersihkan Daftar", command=self._clear_all).pack(side="left", padx=(6, 0))
+
         self.tree.bind("<Double-1>", self._on_tree_double)
         self.tree.bind("<Button-3>", self._on_tree_menu)
+        self.tree.bind("<Button-1>", self._on_tree_click, add="+")
 
     def _build_settings(self):
         wrap = ttk.Frame(self.content, style="Bg.TFrame")
@@ -497,13 +546,16 @@ class App:
         lf = ttk.Labelframe(self.content, text=" Log ")
         lf.grid(row=2, column=0, sticky="nsew")
         lf.columnconfigure(0, weight=1)
-        lf.rowconfigure(0, weight=1)
+        lf.rowconfigure(1, weight=1)
+        hdr = ttk.Frame(lf)
+        hdr.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 0))
+        ttk.Button(hdr, text="🧹 Bersihkan Log", command=self._clear_log).pack(side="right")
         self.txt_log = tk.Text(lf, height=7, bg=C["panel2"], fg=C["fg"], relief="flat",
                                font=("Consolas", 9), state="disabled", wrap="word",
                                insertbackground=C["fg"], selectbackground=C["sel"])
-        self.txt_log.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        self.txt_log.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
         vsb = ttk.Scrollbar(lf, orient="vertical", command=self.txt_log.yview)
-        vsb.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
+        vsb.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=8)
         self.txt_log.configure(yscrollcommand=vsb.set)
         for tag, color in (("ok", C["ok"]), ("err", C["err"]), ("warn", C["warn"]),
                            ("mut", C["mut"]), ("info", C["fg"])):
@@ -535,7 +587,6 @@ class App:
                                      command=self._on_cancel, state="disabled")
         self.btn_cancel.pack(side="left", padx=(8, 0))
         ttk.Button(act, text="📂 Buka Folder Output", command=self._open_output_folder).pack(side="left", padx=(8, 0))
-        ttk.Button(act, text="Kosongkan Daftar", command=self._clear_all).pack(side="right")
 
     # ------------------------------------------------------------- settings
 
@@ -774,25 +825,118 @@ class App:
                 s = str(f)
                 if s in self.items:
                     continue
-                self.items[s] = {"status": "Menunggu", "out": None}
+                self.items[s] = {"status": "Menunggu", "out": None, "checked": False}
                 self.order.append(s)
-                self.tree.insert("", "end", iid=s, values=(f.name, "Menunggu", _fmt_size(f)), tags=("fg",))
+                self.tree.insert("", "end", iid=s,
+                                 values=("☐", f.name, "Menunggu", _fmt_size(f)), tags=("fg",))
                 added += 1
         if added:
             self.ph_label.place_forget()
             self._update_counts()
+            self._update_check_state()
             self._log(f"+{added} gambar masuk antrean.", "ok")
 
     def _remove_selected(self):
-        for iid in self.tree.selection():
+        self._remove_iids(list(self.tree.selection()))
+
+    def _remove_checked(self):
+        targets = self._checked_items()
+        if not targets:
+            return
+        self._remove_iids(targets)
+
+    def _remove_iids(self, iids: List[str]):
+        """Hapus sekumpulan item dari daftar; item yang sedang diproses dilindungi."""
+        removed = skipped = 0
+        for iid in iids:
             if self.running and self.items.get(iid, {}).get("status") == "Memproses":
+                skipped += 1
+                continue
+            if not self.tree.exists(iid):
                 continue
             self.tree.delete(iid)
             self.items.pop(iid, None)
             self.order = [s for s in self.order if s != iid]
+            removed += 1
         if not self.order:
             self.ph_label.place(relx=0.5, rely=0.45, anchor="center")
         self._update_counts()
+        self._update_check_state()
+        if removed:
+            self._log(f"−{removed} gambar dihapus dari daftar.", "mut")
+        if skipped:
+            self._log(f"{skipped} gambar sedang diproses — tidak dihapus.", "warn")
+
+    # ------------------------------------------------------ centang (checkbox)
+
+    def _checked_items(self) -> List[str]:
+        return [s for s in self.order if self.items.get(s, {}).get("checked")]
+
+    def _set_checked(self, iid: str, checked: bool):
+        info = self.items.get(iid)
+        if info is None:
+            return
+        info["checked"] = bool(checked)
+        if self.tree.exists(iid):
+            self.tree.set(iid, "chk", "☑" if checked else "☐")
+        self._update_check_state()
+
+    def _set_all_checked(self, checked: bool):
+        for s in self.order:
+            info = self.items.get(s)
+            if info is None:
+                continue
+            info["checked"] = checked
+            if self.tree.exists(s):
+                self.tree.set(s, "chk", "☑" if checked else "☐")
+        self._update_check_state()
+
+    def _set_checked_many(self, iids: List[str], checked: bool):
+        for iid in iids:
+            info = self.items.get(iid)
+            if info is None:
+                continue
+            info["checked"] = bool(checked)
+            if self.tree.exists(iid):
+                self.tree.set(iid, "chk", "☑" if checked else "☐")
+        self._update_check_state()
+
+    def _toggle_check_all(self):
+        """Dipanggil checkbutton 'Pilih Semua' di toolbar."""
+        self._set_all_checked(bool(self.var_check_all.get()))
+
+    def _toggle_all_from_heading(self):
+        """Klik header kolom ☐ — centang semua, atau lepas semua bila sudah penuh."""
+        if not self.order:
+            return
+        target = not all(self.items.get(s, {}).get("checked") for s in self.order)
+        self._set_all_checked(target)
+
+    def _on_tree_click(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "heading":
+            if self.tree.identify_column(event.x) == "#1":
+                self._toggle_all_from_heading()
+                return "break"
+            return
+        if region != "cell" or self.tree.identify_column(event.x) != "#1":
+            return
+        iid = self.tree.identify_row(event.y)
+        info = self.items.get(iid)
+        if info is None:
+            return
+        self._set_checked(iid, not info.get("checked"))
+        return "break"
+
+    def _update_check_state(self):
+        total = len(self.order)
+        checked = len(self._checked_items())
+        self.tree.heading("chk", text="☑" if total and checked == total else ("▣" if checked else "☐"))
+        self.var_check_all.set(bool(total) and checked == total)
+        if checked:
+            self.btn_remove_checked.configure(text=f"🗑 Hapus Tercentang ({checked})", state="!disabled")
+        else:
+            self.btn_remove_checked.configure(text="🗑 Hapus Tercentang (0)", state="disabled")
 
     def _clear_all(self):
         if self.running:
@@ -805,6 +949,8 @@ class App:
         self.produced.clear()
         self.ph_label.place(relx=0.5, rely=0.45, anchor="center")
         self._update_counts()
+        self._update_check_state()
+        self._log("Daftar gambar dibersihkan.", "mut")
 
     def _update_counts(self):
         done = sum(1 for v in self.items.values() if v["status"].startswith("Selesai"))
@@ -914,12 +1060,17 @@ class App:
             if self.cancel_event.is_set():
                 for rest in jobs[i - 1:]:
                     s = str(rest)
-                    if self.items[s]["status"] in ("Menunggu", "Memproses"):
-                        self.items[s]["status"] = "Dibatalkan"
+                    info = self.items.get(s)
+                    if info is not None and info["status"] in ("Menunggu", "Memproses"):
+                        info["status"] = "Dibatalkan"
                         self._post(("item", s, "Dibatalkan", None))
                 break
-            self.items[str(src)]["status"] = "Memproses"
-            self._post(("item", str(src), "Memproses…", None))
+            s_src = str(src)
+            info = self.items.get(s_src)
+            if info is None:
+                continue  # item dihapus dari daftar saat antrean berjalan — lewati
+            info["status"] = "Memproses"
+            self._post(("item", s_src, "Memproses…", None))
             self._post(("file", i, total, src.name))
             t0 = time.time()
 
@@ -938,11 +1089,12 @@ class App:
                     ok += 1
                     self._post(("item", str(src), f"Selesai · {time.time() - t0:.1f}s", str(out)))
             except TaskCancelled:
-                self._post(("item", str(src), "Dibatalkan", None))
+                self._post(("item", s_src, "Dibatalkan", None))
                 for rest in jobs[i:]:
                     s = str(rest)
-                    if self.items[s]["status"] in ("Menunggu", "Memproses"):
-                        self.items[s]["status"] = "Dibatalkan"
+                    info2 = self.items.get(s)
+                    if info2 is not None and info2["status"] in ("Menunggu", "Memproses"):
+                        info2["status"] = "Dibatalkan"
                         self._post(("item", s, "Dibatalkan", None))
                 break
             except EngineError as e:
@@ -1054,6 +1206,8 @@ class App:
             self.running = False
             self.btn_start.state(["!disabled"])
             self.btn_cancel.state(["disabled"])
+            if not self.cancel_event.is_set():
+                self.bar.configure(value=100)  # item yang dihapus saat antrean berjalan tetap dihitung tuntas
             summary = f"Selesai dalam {elapsed:.0f}s — berhasil {ok}, gagal {fail}, dilewati {skip}"
             self._set_status(summary)
             self._log("✔ " + summary if fail == 0 else "⚠ " + summary, "ok" if fail == 0 else "warn")
@@ -1098,6 +1252,11 @@ class App:
         self.txt_log.see("end")
         self.txt_log.configure(state="disabled")
 
+    def _clear_log(self):
+        self.txt_log.configure(state="normal")
+        self.txt_log.delete("1.0", "end")
+        self.txt_log.configure(state="disabled")
+
     def _open_output_folder(self):
         base = self.var_out_dir.get().strip() if self.var_out_mode.get() == "custom" else ""
         target = Path(base) if base else OUTPUT_DIR
@@ -1107,7 +1266,10 @@ class App:
         except Exception as e:  # noqa: BLE001
             messagebox.showerror(APP_NAME, f"Tidak bisa membuka folder:\n{e}")
 
-    def _on_tree_double(self, _event):
+    def _on_tree_double(self, event):
+        if (self.tree.identify_region(event.x, event.y) == "cell"
+                and self.tree.identify_column(event.x) == "#1"):
+            return  # klik ganda di kolom centang bukan aksi pratinjau
         if not self.order:
             self._pick_files()
             return
@@ -1128,6 +1290,11 @@ class App:
             self.tree.selection_set(iid)
         menu = tk.Menu(self.root, tearoff=0, bg=C["panel2"], fg=C["fg"],
                        activebackground=C["sel"], activeforeground=C["fg"])
+        sel = list(self.tree.selection())
+        all_checked = bool(sel) and all(self.items.get(s, {}).get("checked") for s in sel)
+        menu.add_command(label="☐  Lepas centang" if all_checked else "☑  Centang pilihan",
+                         command=lambda: self._set_checked_many(sel, not all_checked))
+        menu.add_separator()
         out = self.items.get(iid, {}).get("out")
         if out and Path(out).exists():
             menu.add_command(label="🖼  Lihat pratinjau sebelum/sesudah",
