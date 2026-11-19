@@ -22,6 +22,7 @@ DEFAULTS = {
     "model_waifu2x": "models-cunet",
     "model_realcugan": "models-se",
     "model_realesrgan": "realesr-animevideov3",
+    "model_category": "semua",  # filter dropdown model: semua | anime | foto
     "scale": 2,
     "denoise": 0,
     "tile": 0,               # 0 = auto
@@ -33,7 +34,6 @@ DEFAULTS = {
     "output_dir": "",         # "" -> pakai OUTPUT_DIR bawaan
     "suffix": "_upscaled",
     "subfolders": True,       # scan folder secara rekursif
-    "skip_existing": True,
     "auto_open": False,       # buka folder output setelah antrean selesai
     "window_w": 1150,         # ukuran & posisi jendela terakhir
     "window_h": 820,

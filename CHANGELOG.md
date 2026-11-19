@@ -5,6 +5,36 @@ Semua perubahan penting pada proyek ini akan didokumentasikan di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan versi mengikuti [Semantic Versioning](https://semver.org/lang/id/).
 
+## [1.6.0] - 2026-11-20
+
+### Ditambahkan
+
+- **Menu Bantuan bawaan** — menubar baru di atas jendela berisi *Panduan & Fitur…*, *Buka PANDUAN.md di editor*, dan *Tentang WaifuUpscaler*. Jendela *Panduan & Fitur* menampilkan panduan lengkap + daftar seluruh fitur yang **tertanam di aplikasi** (`app/panduan.py`, tetap ada walau folder `docs/` tidak ikut) dengan dropdown *Lompat ke bagian*, tombol ⬆ Ke Atas, scroll roda mouse, dan Esc untuk menutup. Dibuka juga lewat tombol **❓ Panduan** di pojok kanan atas header atau tombol **F1**.
+- **Penamaan output ber-cap waktu** — semua nama file output kini diawali tanggal-jam sampai detik (`YYYYMMDD-HHMMSS-namafile.ext`, contoh: `20261120-143052-gambar.png`). Mode folder asal ikut memakai cap waktu di depan (akhiran `_upscaled` tetap dipertahankan), mode folder khusus memakai `tanggal-jam-namafile.ext`.
+
+### Diubah
+
+- **Fitur "Lewati file yang output-nya sudah ada" dihapus** — digantikan cap waktu di atas: gambar yang sama kini bisa di-upscale berkali-kali dan setiap hasil tersimpan sebagai file baru, tidak pernah menimpa hasil sebelumnya. Checkbox serta kunci `skip_existing` di `config.json` tidak lagi dipakai (nilai sisa di config lama diabaikan otomatis).
+
+### Diperbaiki
+
+- **Navigasi "Lompat ke bagian" di jendela Panduan & Fitur** — lompatan sebelumnya tidak sesuai karena dua hal: gravitasi mark bawaan (`right`) mendorong mark ke baris kosong sesudah judul, dan `yview_pickplace` tidak menggerakkan view bila bagian tujuan kebetulan sudah terlihat. Kini mark dipasang dengan gravitasi `left` (persis di baris judulnya) dan lompatan mengukur posisi piksel baris judul (`see` + `dlineinfo` + `yview_scroll`) sehingga judul bagian selalu mendarat di puncak jendela.
+
+## [1.5.0] - 2026-11-18
+
+### Ditambahkan
+
+- **Dukungan foto real manusia** — tiga fitur baru dari referensi arsitektur Upscayl:
+  - **Kategori model (Semua/Anime/Foto)** — dropdown *Kategori* baru di panel *Engine & Kualitas* memfilter daftar model; kategori ditandai otomatis dari id model (`realesrgan-x4plus`, `upscayl-*`, `upconv7-photo` = foto; sisanya anime). Pilihan tersimpan di `config.json`.
+  - **Kelola model foto** — dialog baru (tombol *Kelola foto…*) berisi katalog model foto ncnn yang kompatibel dengan engine Real-ESRGAN yang sudah ada: **Upscayl Lite** (±2,4 MB, cepat) dan **Upscayl Standard** (±33 MB, kualitas umum terbaik). File diambil hemat: disalin dari clone upscayl lokal bila ada, selain itu diunduh dari repo resmi `upscayl/upscayl` (commit ter-pin). Model siap langsung muncul di dropdown tanpa ubah kode.
+  - **Emulasi skala 1x-3x ala Upscayl ("Downscayl")** — model fixed-4x (x4plus, model foto Upscayl) kini bisa dipakai di skala 1x/2x/3x: inferensi dijalankan penuh di skala native 4x lalu hasilnya diturunkan LANCZOS di Python (binary official realesrgan tidak punya downscale bawaan). Dropdown skala model 4x kini menawarkan 1x-4x lengkap dengan catatan emulasi.
+- Script uji headless `scripts/test_foto_models.py` — memverifikasi kategori, argumen skala, dan alur end-to-end (PNG uji 64×64 → engine → 256×256 → downscale 128×128) tanpa GUI.
+
+### Catatan
+
+- Model Upscayl yang diunduh berlisensi pemakaian pribadi yang sah; untuk rilis publik, ceklis lisensi per model (varian komunitas seperti Remacri/UltraSharp di Upscayl berlabel Non-Commercial — tidak diikutkan katalog).
+- Branding aplikasi kini menyebut anime **& foto** (judul jendela + subtitle header).
+
 ## [1.4.0] - 2026-10-03
 
 ### Ditambahkan

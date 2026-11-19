@@ -30,22 +30,29 @@ from .config import (
     ICON_PNG,
     LOGO_PNG,
     OUTPUT_DIR,
+    ROOT_DIR,
     load_config,
     save_config,
 )
-from .downloader import DownloadCancelled, download_zip
+from .panduan import SECTIONS as PANDUAN_SECTIONS
+from .downloader import DownloadCancelled, download_model, download_zip
 from .engines import (
     ENGINES,
+    PHOTO_CATALOG,
+    REALESRGAN_LABELS,
     EngineError,
     TaskCancelled,
     build_commands,
+    downscale_png,
     encode_output,
     enumerate_gpus,
     find_exe,
     invalidate_exe_cache,
     list_models,
     move_file,
+    photo_model_files_ready,
     prepare_input,
+    resolve_pass_scale,
     run_engine,
     validate_combo,
 )
@@ -78,6 +85,9 @@ FORMAT_LABELS = {
     "JPG · file kecil": "jpg",
     "WEBP · modern, ringan": "webp",
 }
+
+# Filter kategori model (dropdown Kategori): key config -> label combobox
+CAT_LABELS = {"semua": "Semua", "anime": "Anime", "foto": "Foto"}
 TILE_LABELS = {
     "Auto (ikut ukuran gambar)": 0,
     "64 · VRAM kecil": 64,
@@ -117,7 +127,6 @@ LOGO_STEPS = 18
 STATUS_TAGS = {
     "Selesai": "ok",
     "Gagal": "err",
-    "Dilewati": "mut",
     "Dibatalkan": "warn",
     "Memproses": "acc",
     "Menunggu": "fg",
@@ -178,13 +187,17 @@ class App:
         self.dl_win: Optional[tk.Toplevel] = None
         self._gpu_cache: Dict[str, list] = {}
         self._gpu_running: Dict[str, bool] = {}
+        self._photo_dlg = None       # Toplevel "Kelola Model Foto" (opsional)
+        self._photo_rows: Dict[str, tuple] = {}
+        self._dl_kind = "engine"     # "engine" | "model" — jenis unduhan terakhir
+        self._panduan_win: Optional["PanduanWindow"] = None  # jendela Panduan & Fitur (opsional)
 
         self.engine_by_label: Dict[str, str] = {e.label: k for k, e in ENGINES.items()}
         self.model_by_label: Dict[str, str] = {}
         self.scale_by_label: Dict[str, int] = {}
         self.gpu_map: Dict[str, str] = {}
 
-        root.title(f"{APP_NAME} v{APP_VERSION} — Upscale Gambar Anime")
+        root.title(f"{APP_NAME} v{APP_VERSION} — Upscale Gambar Anime & Foto")
         root.minsize(760, 520)
         root.configure(bg=C["bg"])
         root.columnconfigure(0, weight=1)
@@ -193,6 +206,7 @@ class App:
         self._apply_geometry()
         self._apply_icon()
 
+        self._build_menubar()
         self._build_styles()
         self._build_vars()
         self._build_header()
@@ -379,6 +393,7 @@ class App:
     def _build_vars(self):
         self.var_engine = tk.StringVar()
         self.var_model = tk.StringVar()
+        self.var_model_cat = tk.StringVar(value="Semua")
         self.var_scale = tk.StringVar(value="2x")
         self.var_denoise = tk.DoubleVar(value=self.cfg.get("denoise", 0))
         self.var_tile = tk.StringVar(value="Auto (ikut ukuran gambar)")
@@ -390,7 +405,6 @@ class App:
         self.var_out_dir = tk.StringVar(value=str(OUTPUT_DIR))
         self.var_suffix = tk.StringVar(value=self.cfg.get("suffix", "_upscaled"))
         self.var_subfolders = tk.BooleanVar(value=True)
-        self.var_skip = tk.BooleanVar(value=True)
         self.var_auto_open = tk.BooleanVar(value=False)
         self.var_check_all = tk.BooleanVar(value=False)
         self.var_view = tk.StringVar(value=VIEW_LABELS["detail"])
@@ -408,10 +422,12 @@ class App:
         textcol.pack(side="left")
         ttk.Label(textcol, text="WaifuUpscaler", style="Bg.TLabel",
                   font=("Segoe UI", 17, "bold"), foreground=C["acc"]).pack(anchor="w")
-        ttk.Label(textcol, text="Upscale gambar anime di GPU (Vulkan) · waifu2x · Real-CUGAN · Real-ESRGAN",
+        ttk.Label(textcol, text="Upscale gambar anime & foto di GPU (Vulkan) · waifu2x · Real-CUGAN · Real-ESRGAN",
                   style="BgMut.TLabel").pack(anchor="w")
         self.lbl_engines = ttk.Label(head, text="", style="BgMut.TLabel", justify="right")
         self.lbl_engines.grid(row=0, column=1, sticky="e")
+        ttk.Button(head, text="❓ Panduan", command=self._open_panduan).grid(
+            row=0, column=2, sticky="e", padx=(10, 0))
         self._load_logo()
 
     def _build_content(self):
@@ -640,23 +656,33 @@ class App:
         self.cb_engine.grid(row=0, column=1, sticky="ew", padx=(6, 10), pady=(10, 4))
         self.lbl_engine_note = ttk.Label(f1, text="", style="Mut.TLabel", wraplength=230)
         self.lbl_engine_note.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10)
-        ttk.Label(f1, text="Model").grid(row=2, column=0, sticky="w", padx=10, pady=(8, 4))
+        ttk.Label(f1, text="Kategori").grid(row=2, column=0, sticky="w", padx=10, pady=(8, 4))
+        krow = ttk.Frame(f1)
+        krow.grid(row=2, column=1, sticky="ew", padx=(6, 10), pady=(8, 4))
+        krow.columnconfigure(0, weight=1)
+        self.cb_model_cat = ttk.Combobox(krow, textvariable=self.var_model_cat, state="readonly",
+                                         values=["Semua", "Anime", "Foto"])
+        self.cb_model_cat.grid(row=0, column=0, sticky="ew")
+        ttk.Button(krow, text="Kelola foto…", command=self._manage_photo_models).grid(
+            row=0, column=1, padx=(6, 0))
+        ttk.Label(f1, text="Model").grid(row=3, column=0, sticky="w", padx=10, pady=(8, 4))
         self.cb_model = ttk.Combobox(f1, textvariable=self.var_model, state="readonly")
-        self.cb_model.grid(row=2, column=1, sticky="ew", padx=(6, 10), pady=(8, 4))
-        ttk.Label(f1, text="Skala").grid(row=3, column=0, sticky="w", padx=10, pady=(8, 4))
+        self.cb_model.grid(row=3, column=1, sticky="ew", padx=(6, 10), pady=(8, 4))
+        ttk.Label(f1, text="Skala").grid(row=4, column=0, sticky="w", padx=10, pady=(8, 4))
         self.cb_scale = ttk.Combobox(f1, textvariable=self.var_scale, state="readonly")
-        self.cb_scale.grid(row=3, column=1, sticky="ew", padx=(6, 10), pady=(8, 4))
-        ttk.Label(f1, text="Denoise").grid(row=4, column=0, sticky="nw", padx=10, pady=(10, 10))
+        self.cb_scale.grid(row=4, column=1, sticky="ew", padx=(6, 10), pady=(8, 4))
+        self.lbl_scale_note = ttk.Label(f1, text="", style="Mut.TLabel", wraplength=230)
+        self.lbl_scale_note.grid(row=5, column=0, columnspan=2, sticky="ew", padx=10)
+        ttk.Label(f1, text="Denoise").grid(row=6, column=0, sticky="nw", padx=10, pady=(10, 10))
         dwrap = ttk.Frame(f1)
-        dwrap.grid(row=4, column=1, sticky="ew", padx=(6, 10), pady=(10, 10))
+        dwrap.grid(row=6, column=1, sticky="ew", padx=(6, 10), pady=(10, 10))
         dwrap.columnconfigure(0, weight=1)
         self.sc_denoise = ttk.Scale(dwrap, from_=-1, to=3, variable=self.var_denoise,
                                     command=self._on_denoise)
         self.sc_denoise.grid(row=0, column=0, sticky="ew")
         self.lbl_denoise_val = ttk.Label(dwrap, text="", style="Mut.TLabel")
         self.lbl_denoise_val.grid(row=1, column=0, sticky="w")
-        f1.bind("<Configure>",
-                lambda e: self.lbl_engine_note.configure(wraplength=max(140, e.width - 130)))
+        f1.bind("<Configure>", lambda e: self._wrap_note_labels(e.width))
 
         # -- Kolom 2: performa & format
         f2 = ttk.Labelframe(wrap, text=" Performa & Format ")
@@ -712,17 +738,20 @@ class App:
         ttk.Checkbutton(f3, text="Ikuti subfolder saat menambah folder",
                         variable=self.var_subfolders).grid(row=4, column=0, columnspan=2,
                                                            sticky="w", padx=10, pady=(10, 2))
-        ttk.Checkbutton(f3, text="Lewati file yang output-nya sudah ada",
-                        variable=self.var_skip).grid(row=5, column=0, columnspan=2,
-                                                     sticky="w", padx=10, pady=2)
         ttk.Checkbutton(f3, text="Buka folder output setelah selesai",
-                        variable=self.var_auto_open).grid(row=6, column=0, columnspan=2,
+                        variable=self.var_auto_open).grid(row=5, column=0, columnspan=2,
                                                           sticky="w", padx=10, pady=(2, 12))
 
         self.cb_engine.bind("<<ComboboxSelected>>", self._engine_changed)
+        self.cb_model_cat.bind("<<ComboboxSelected>>", self._engine_changed)
         self.cb_model.bind("<<ComboboxSelected>>", self._model_changed)
         self.cb_scale.bind("<<ComboboxSelected>>", self._scale_changed)
         self.cb_format.bind("<<ComboboxSelected>>", lambda _e: self._on_outmode())
+
+    def _wrap_note_labels(self, width: float):
+        wl = max(140, width - 130)
+        self.lbl_engine_note.configure(wraplength=wl)
+        self.lbl_scale_note.configure(wraplength=wl)
 
     def _build_log(self):
         lf = self._make_section(self.content, "log", "Log")
@@ -783,7 +812,6 @@ class App:
         self.var_out_dir.set(outdir)
         self.var_suffix.set(c.get("suffix", "_upscaled"))
         self.var_subfolders.set(bool(c.get("subfolders", True)))
-        self.var_skip.set(bool(c.get("skip_existing", True)))
         self.var_auto_open.set(bool(c.get("auto_open", False)))
         self.var_view.set(VIEW_LABELS.get(c.get("view_mode", "detail"), "Detail"))
         fmt = c.get("format", "png")
@@ -799,6 +827,7 @@ class App:
                 self.var_engine.set(label)
         if not self.var_engine.get():
             self.var_engine.set(next(iter(self.engine_by_label)))
+        self.var_model_cat.set(CAT_LABELS.get(c.get("model_category", "semua"), "Semua"))
         self._on_outmode()
 
     def _on_quality(self, _val=None):
@@ -842,6 +871,11 @@ class App:
         eng = ENGINES[key]
         self.lbl_engine_note.configure(text=eng.note)
         models = list_models(eng)
+        cat = self.var_model_cat.get()
+        if cat == "Foto":
+            models = {mid: sp for mid, sp in models.items() if sp.category == "foto"}
+        elif cat == "Anime":
+            models = {mid: sp for mid, sp in models.items() if sp.category == "anime"}
         self.model_by_label = {spec.label: mid for mid, spec in models.items()}
         self.cb_model["values"] = list(self.model_by_label)
         saved = self.cfg.get(f"model_{key}", eng.default_model)
@@ -860,8 +894,17 @@ class App:
         mid = self.model_by_label.get(self.var_model.get())
         spec = models.get(mid)
         if spec is None:
+            self.lbl_scale_note.configure(text="")
             return
-        labels = ["1x (denoise saja)" if s == 1 else f"{s}x" for s in spec.scales]
+        if key == "realesrgan" and spec.scales == (4,):
+            self.lbl_scale_note.configure(
+                text="Model 4x native: skala 1x-3x diemulasi (downscale Lanczos "
+                     "setelah upscale 4x).")
+            scales = (1, 2, 3, 4)  # emulasi ala Upscayl — 1x-3x diturunkan di Python
+        else:
+            self.lbl_scale_note.configure(text="")
+            scales = spec.scales
+        labels = ["1x (denoise saja)" if s == 1 else f"{s}x" for s in scales]
         self.scale_by_label = dict(zip(labels, spec.scales))
         self.cb_scale["values"] = labels
         cur = self.var_scale.get()
@@ -935,7 +978,10 @@ class App:
         spec = models.get(mid)
         scale = self.scale_by_label.get(self.var_scale.get(), 2)
         if spec and spec.scales and scale not in spec.scales:
-            scale = spec.scales[-1]
+            # Model fixed-4x realesrgan: 1x-3x sah (diemulasi ala Upscayl);
+            # kombinasi lain dipaksa kembali ke skala native terkecil.
+            if not (spec.scales == (4,) and 1 <= scale <= 4):
+                scale = spec.scales[-1]
         levels = spec.denoise_levels(scale) if spec else ()
         denoise = int(float(self.var_denoise.get())) if levels else 0
         if levels and denoise not in levels:
@@ -945,6 +991,9 @@ class App:
             "model": mid,
             "scale": scale,
             "denoise": denoise,
+            "model_category": next(
+                (k for k, lab in CAT_LABELS.items() if lab == self.var_model_cat.get()),
+                "semua"),
             "tile": TILE_LABELS.get(self.var_tile.get(), 0),
             "gpu": self.gpu_map.get(self.var_gpu.get(), "auto"),
             "tta": bool(self.var_tta.get()),
@@ -954,7 +1003,6 @@ class App:
             "output_dir": self.var_out_dir.get().strip(),
             "suffix": self.var_suffix.get().strip() or "_upscaled",
             "subfolders": bool(self.var_subfolders.get()),
-            "skip_existing": bool(self.var_skip.get()),
             "auto_open": bool(self.var_auto_open.get()),
             "view_mode": self._view_key(),
         })
@@ -1299,16 +1347,18 @@ class App:
             return
         self._begin(pending, cfg)
 
-    def _download_engine(self, eng):
+    def _open_dl_window(self, title: str, kind: str = "engine"):
+        """Jendela progres unduhan bersama (zip engine / model foto)."""
         self.dl_cancel.clear()
+        self._dl_kind = kind
         win = tk.Toplevel(self.root)
-        win.title(f"Mengunduh {eng.label}")
+        win.title(title)
         win.configure(bg=C["panel"])
         win.geometry("440x140")
         win.resizable(False, False)
         win.transient(self.root)
         win.grab_set()
-        ttk.Label(win, text=f"Mengunduh {eng.label}…", style="TLabel",
+        ttk.Label(win, text=f"{title}…", style="TLabel",
                   font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=16, pady=(16, 4))
         bar = ttk.Progressbar(win, style="Accent.Horizontal.TProgressbar", maximum=100)
         bar.pack(fill="x", padx=16)
@@ -1318,6 +1368,9 @@ class App:
         self.dl_win = win
         self._dl_bar = bar
         self._dl_lbl = lbl
+
+    def _download_engine(self, eng):
+        self._open_dl_window(f"Mengunduh {eng.label}", kind="engine")
         threading.Thread(target=self._download_worker, args=(eng,), daemon=True).start()
 
     def _download_worker(self, eng):
@@ -1329,6 +1382,75 @@ class App:
             self._post(("dl_done", False, str(e)))
         else:
             self._post(("dl_done", True, ""))
+
+    def _download_model_worker(self, model_id: str):
+        try:
+            download_model(model_id, progress=self._on_dl_progress, cancel=self.dl_cancel)
+        except DownloadCancelled:
+            self._post(("dl_done", False, "cancelled"))
+        except EngineError as e:
+            self._post(("dl_done", False, str(e)))
+        else:
+            self._post(("dl_done", True, ""))
+
+    # ------------------------------------------------- kelola model foto
+
+    def _manage_photo_models(self):
+        """Dialog kelola model foto: status pasangan .param/.bin + tombol unduh."""
+        if self._photo_dlg is not None and self._photo_dlg.winfo_exists():
+            self._photo_dlg.lift()
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Kelola Model Foto")
+        win.configure(bg=C["panel"])
+        win.transient(self.root)
+        win.resizable(False, False)
+        ttk.Label(win, text="Model foto real (.param + .bin ncnn) — berjalan di engine "
+                            "Real-ESRGAN yang sudah ada di tools/.",
+                  style="Mut.TLabel", wraplength=430, justify="left").pack(
+            anchor="w", padx=16, pady=(14, 8))
+        self._photo_rows = {}
+        for mid, meta in PHOTO_CATALOG.items():
+            row = ttk.Frame(win)
+            row.pack(fill="x", padx=16, pady=5)
+            info = ttk.Frame(row)
+            info.pack(side="left", fill="x", expand=True)
+            ttk.Label(info, text=REALESRGAN_LABELS.get(mid, mid), style="TLabel",
+                      font=("Segoe UI", 10, "bold")).pack(anchor="w")
+            ttk.Label(info, text=f"±{meta['bin_mb']} MB · {meta['deskripsi']}",
+                      style="Mut.TLabel", wraplength=320, justify="left").pack(anchor="w")
+            status = ttk.Label(row, text="", style="Mut.TLabel")
+            status.pack(side="left", padx=(8, 8))
+            btn = ttk.Button(row, text="Unduh", width=8,
+                             command=lambda m=mid: self._download_photo_model(m))
+            btn.pack(side="left")
+            self._photo_rows[mid] = (status, btn)
+        ttk.Label(win, text="Sumber file: disalin dari clone upscayl lokal bila ada, "
+                            "selain itu diunduh dari repo resmi upscayl/upscayl "
+                            "(commit ter-pin). Model muncul di dropdown setelah siap.",
+                  style="Mut.TLabel", wraplength=430, justify="left").pack(
+            anchor="w", padx=16, pady=(4, 12))
+        self._photo_dlg = win
+        self._refresh_photo_dlg()
+
+    def _download_photo_model(self, model_id: str):
+        if self.dl_win is not None and self.dl_win.winfo_exists():
+            return  # ada unduhan lain yang sedang berjalan
+        self._open_dl_window(f"Mengunduh {REALESRGAN_LABELS.get(model_id, model_id)}",
+                             kind="model")
+        self._refresh_photo_dlg()
+        threading.Thread(target=self._download_model_worker, args=(model_id,),
+                         daemon=True).start()
+
+    def _refresh_photo_dlg(self):
+        """Perbarui status + tombol dialog Kelola (idempoten, aman saat dialog tutup)."""
+        if self._photo_dlg is None or not self._photo_dlg.winfo_exists():
+            return
+        dl_active = self.dl_win is not None and self.dl_win.winfo_exists()
+        for mid, (status, btn) in self._photo_rows.items():
+            ready = photo_model_files_ready(mid)
+            status.configure(text="✔ siap" if ready else "belum ada")
+            btn.state(["disabled"] if (ready or dl_active) else ["!disabled"])
 
     def _on_dl_progress(self, done: int, total: int):
         self._post(("dl", done, total))
@@ -1357,7 +1479,7 @@ class App:
         self.ui_q.put(msg)
 
     def _worker(self, jobs: List[Path], cfg: dict):
-        ok = fail = skip = 0
+        ok = fail = 0
         total = len(jobs)
         t_all = time.time()
         for i, src in enumerate(jobs, 1):
@@ -1385,13 +1507,8 @@ class App:
 
             try:
                 out = self._process_one(src, cfg, file_prog)
-                if out is None:
-                    skip += 1
-                    self._post(("item", str(src), "Dilewati · sudah ada",
-                                str(self._output_path(src, cfg))))
-                else:
-                    ok += 1
-                    self._post(("item", str(src), f"Selesai · {time.time() - t0:.1f}s", str(out)))
+                ok += 1
+                self._post(("item", str(src), f"Selesai · {time.time() - t0:.1f}s", str(out)))
             except TaskCancelled:
                 self._post(("item", s_src, "Dibatalkan", None))
                 for rest in jobs[i:]:
@@ -1412,23 +1529,21 @@ class App:
                 detail = "".join(traceback.format_exception_only(type(e), e)).strip()
                 self._post(("log", f"[GAGAL] {src.name} — {detail}", "err"))
                 self._post(("log", traceback.format_exc().strip().splitlines()[-3], "mut"))
-        self._post(("done", ok, fail, skip, time.time() - t_all))
+        self._post(("done", ok, fail, time.time() - t_all))
 
-    def _process_one(self, src: Path, cfg: dict, progress_cb) -> Optional[Path]:
+    def _process_one(self, src: Path, cfg: dict, progress_cb) -> Path:
         out = self._output_path(src, cfg)
         if cfg["output_mode"] == "custom":
             out = self._dedupe_output(out, src)
-        if cfg["skip_existing"] and out.exists():
-            progress_cb(100.0)
-            return None
         out.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="waifuup_") as td:
             td_path = Path(td)
             work_in = prepare_input(src, td_path)
             tmp_png = td_path / (src.stem + ".out.png")
+            spec = list_models(ENGINES[cfg["engine"]]).get(cfg["model"])
             cmds = build_commands(
                 cfg["engine"], cfg["model"], cfg["scale"], cfg["denoise"],
-                cfg["tta"], cfg["tile"], cfg["gpu"], work_in, tmp_png,
+                cfg["tta"], cfg["tile"], cfg["gpu"], work_in, tmp_png, spec=spec,
             )
             n = len(cmds)
             for idx, cmd in enumerate(cmds):
@@ -1439,6 +1554,11 @@ class App:
                     lambda pct, off=off, span=span: progress_cb(off + pct * span / 100.0),
                     self.cancel_event,
                 )
+            # Emulasi skala ala Upscayl ("Downscayl"): inferensi berjalan di skala
+            # native model, hasilnya diturunkan LANCZOS ke skala yang diminta.
+            pass_scale = resolve_pass_scale(cfg["engine"], spec, cfg["scale"])
+            if pass_scale != cfg["scale"]:
+                downscale_png(tmp_png, cfg["scale"] / pass_scale)
             if cfg["format"] == "png":
                 move_file(tmp_png, out)
             else:
@@ -1449,10 +1569,13 @@ class App:
 
     def _output_path(self, src: Path, cfg: dict) -> Path:
         ext = "." + cfg["format"]
+        # Cap waktu (detik-presisi) di depan nama: gambar yang sama bisa
+        # di-upscale berkali-kali tanpa menimpa hasil sebelumnya.
+        stamp = time.strftime("%Y%m%d-%H%M%S")
         if cfg["output_mode"] == "source":
-            return src.with_name(src.stem + cfg["suffix"] + ext)
+            return src.with_name(f"{stamp}-{src.stem}{cfg['suffix']}{ext}")
         base = Path(cfg["output_dir"]) if cfg["output_dir"] else OUTPUT_DIR
-        return base / (src.stem + ext)
+        return base / f"{stamp}-{src.stem}{ext}"
 
     def _dedupe_output(self, out: Path, src: Path) -> Path:
         """Di folder khusus, dua sumber dengan nama sama tidak boleh saling menimpa."""
@@ -1516,13 +1639,13 @@ class App:
                 if exe is not None and str(exe) == exe_key:
                     self._fill_gpu_combo(pairs)
         elif kind == "done":
-            _, ok, fail, skip, elapsed = msg
+            _, ok, fail, elapsed = msg
             self.running = False
             self.btn_start.state(["!disabled"])
             self.btn_cancel.state(["disabled"])
             if not self.cancel_event.is_set():
                 self.bar.configure(value=100)  # item yang dihapus saat antrean berjalan tetap dihitung tuntas
-            summary = f"Selesai dalam {elapsed:.0f}s — berhasil {ok}, gagal {fail}, dilewati {skip}"
+            summary = f"Selesai dalam {elapsed:.0f}s — berhasil {ok}, gagal {fail}"
             self._set_status(summary)
             self._log("✔ " + summary if fail == 0 else "⚠ " + summary, "ok" if fail == 0 else "warn")
             if self.var_auto_open.get() and ok:
@@ -1546,15 +1669,19 @@ class App:
             self._refresh_engine_status()
             key = self.engine_by_label.get(self.var_engine.get(), "waifu2x")
             self._refresh_gpus(key)
+            what = "model foto" if self._dl_kind == "model" else "engine"
             if ok:
-                self._log("Engine berhasil diunduh & diekstrak.", "ok")
+                self._log(("Model foto siap dipakai — pilih di dropdown Model."
+                           if self._dl_kind == "model"
+                           else "Engine berhasil diunduh & diekstrak."), "ok")
                 self._engine_changed()
                 if self._auto_start:
                     self._auto_start = False
                     self._on_start()
             elif err != "cancelled":
-                self._log(f"Gagal mengunduh engine: {err}", "err")
-                messagebox.showerror(APP_NAME, f"Gagal mengunduh engine:\n{err}")
+                self._log(f"Gagal mengunduh {what}: {err}", "err")
+                messagebox.showerror(APP_NAME, f"Gagal mengunduh {what}:\n{err}")
+            self._refresh_photo_dlg()
 
     def _set_status(self, text: str):
         self.lbl_status.configure(text=text)
@@ -1579,6 +1706,55 @@ class App:
             os.startfile(str(target))  # noqa: S606 — Windows only, sesuai target aplikasi
         except Exception as e:  # noqa: BLE001
             messagebox.showerror(APP_NAME, f"Tidak bisa membuka folder:\n{e}")
+
+    # ------------------------------------------------------------- bantuan
+
+    def _build_menubar(self):
+        """Menubar bawaan: khusus menu Bantuan (panduan, docs, tentang)."""
+        mb = tk.Menu(self.root)
+        m = tk.Menu(mb, tearoff=0, bg=C["panel2"], fg=C["fg"],
+                    activebackground=C["sel"], activeforeground=C["fg"])
+        m.add_command(label="📖 Panduan & Fitur…", command=self._open_panduan,
+                      accelerator="F1")
+        m.add_command(label="📄 Buka PANDUAN.md di editor", command=self._open_panduan_md)
+        m.add_separator()
+        m.add_command(label="ℹ️ Tentang WaifuUpscaler", command=self._show_about)
+        mb.add_cascade(label="📖 Bantuan", menu=m)
+        self.root.config(menu=mb)
+        self.root.bind("<F1>", lambda _e: self._open_panduan())
+
+    def _open_panduan(self):
+        if self._panduan_win is not None and self._panduan_win.winfo_exists():
+            self._panduan_win.lift()
+            return
+        self._panduan_win = PanduanWindow(self.root, on_open_md=self._open_panduan_md)
+
+    def _open_panduan_md(self):
+        """Buka file docs/PANDUAN.md di aplikasi editor bawaan Windows."""
+        path = ROOT_DIR / "docs" / "PANDUAN.md"
+        if not path.exists():
+            messagebox.showinfo(
+                APP_NAME,
+                "File docs/PANDUAN.md tidak ditemukan.\n"
+                "Gunakan menu Bantuan › Panduan & Fitur — panduan lengkap sudah "
+                "tertanam di dalam aplikasi.")
+            return
+        try:
+            os.startfile(str(path))  # noqa: S606 — Windows only, sesuai target aplikasi
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror(APP_NAME, f"Tidak bisa membuka file:\n{e}")
+
+    def _show_about(self):
+        messagebox.showinfo(
+            f"Tentang {APP_NAME}",
+            f"{APP_NAME} v{APP_VERSION}\n\n"
+            "Upscale gambar anime & foto di GPU (Vulkan) — tanpa PyTorch.\n\n"
+            "Engine & model pihak ketiga:\n"
+            "• waifu2x-ncnn-vulkan — nihui\n"
+            "• realcugan-ncnn-vulkan — nihui\n"
+            "• Real-ESRGAN — xinntao\n"
+            "• Model foto Upscayl Lite & Standard — tim Upscayl\n\n"
+            "Lisensi tiap engine/model mengikuti repo asalnya.")
 
     def _on_tree_double(self, event):
         if (self.tree.identify_region(event.x, event.y) == "cell"
@@ -1748,3 +1924,119 @@ class PreviewWindow(tk.Toplevel):
             text=f"{b_path.name} {b_img.size[0]}×{b_img.size[1]} ({_fmt_size(b_path)})   →   "
                  f"{a_img.size[0]}×{a_img.size[1]} ({_fmt_size(a_path)})   ·   {px:.1f}× piksel"
         )
+
+
+class PanduanWindow(tk.Toplevel):
+    """Jendela 'Panduan & Fitur' — panduan lengkap yang TERTANAM di aplikasi.
+
+    Konten diambil dari app/panduan.py (SECTIONS) sehingga tetap tampil walau
+    folder docs/ tidak ikut saat aplikasi dibagikan. Navigasi: dropdown
+    "Lompat ke bagian", scroll + roda mouse, Esc untuk menutup.
+    """
+
+    # kind di data konten (app/panduan.py) -> nama tag di widget Text
+    KIND_TAGS = {"p": "p", "b": "b", "h": "h2", "n": "n", "row": "row", "pre": "pre"}
+
+    def __init__(self, master, on_open_md=None):
+        super().__init__(master)
+        self.configure(bg=C["panel"])
+        self.title(f"Panduan & Fitur — {APP_NAME}")
+        self.geometry("900x700")
+        self.minsize(640, 440)
+        self.transient(master)
+
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=12, pady=(12, 4))
+        ttk.Label(top, text="Lompat ke bagian:", style="Mut.TLabel").pack(side="left")
+        self.cb_jump = ttk.Combobox(top, state="readonly", width=34)
+        self.cb_jump.pack(side="left", padx=(6, 0))
+        self.cb_jump.bind("<<ComboboxSelected>>", self._jump)
+        ttk.Button(top, text="⬆ Ke Atas", width=9,
+                   command=lambda: self.text.yview_moveto(0.0)).pack(side="right")
+
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=12, pady=(4, 4))
+        body.rowconfigure(0, weight=1)
+        body.columnconfigure(0, weight=1)
+        self.text = tk.Text(body, wrap="word", bg=C["panel2"], fg=C["fg"],
+                            relief="flat", bd=0, padx=18, pady=14,
+                            font=("Segoe UI", 10), state="disabled", cursor="arrow")
+        self.text.grid(row=0, column=0, sticky="nsew")
+        vsb = ttk.Scrollbar(body, orient="vertical", command=self.text.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        self.text.configure(yscrollcommand=vsb.set)
+        self.text.bind("<MouseWheel>",
+                       lambda e: self.text.yview_scroll(-int(e.delta / 120), "units"))
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+        bottom = ttk.Frame(self)
+        bottom.pack(fill="x", padx=12, pady=(2, 12))
+        ttk.Label(bottom, text=f"{APP_NAME} v{APP_VERSION}",
+                  style="Mut.TLabel").pack(side="left")
+        if on_open_md is not None:
+            ttk.Button(bottom, text="📄 Buka PANDUAN.md",
+                       command=on_open_md).pack(side="right")
+        ttk.Button(bottom, text="Tutup", command=self.destroy).pack(side="right", padx=(0, 8))
+
+        self._marks: List[tuple] = []  # (judul bagian, nama mark di widget Text)
+        self._fill()
+        self.cb_jump["values"] = [j for j, _m in self._marks]
+        if self._marks:
+            self.cb_jump.set(self._marks[0][0])
+
+    def _fill(self):
+        """Render SECTIONS ke widget Text (read-only) + pasang mark navigasi."""
+        t = self.text
+        t.tag_configure("h1", font=("Segoe UI", 13, "bold"), foreground=C["acc"],
+                        spacing1=16, spacing3=8)
+        t.tag_configure("h2", font=("Segoe UI", 10, "bold"), foreground=C["fg"],
+                        spacing1=10, spacing3=3)
+        t.tag_configure("p", font=("Segoe UI", 10), spacing3=5)
+        t.tag_configure("b", font=("Segoe UI", 10), lmargin1=14, lmargin2=30,
+                        spacing1=3)
+        t.tag_configure("n", font=("Segoe UI", 9, "italic"), foreground=C["mut"],
+                        lmargin1=14, lmargin2=30, spacing3=6)
+        t.tag_configure("row", font=("Consolas", 9), lmargin1=14, spacing1=1)
+        t.tag_configure("pre", font=("Consolas", 9), lmargin1=14, spacing1=1)
+        t.configure(state="normal")
+        for i, sec in enumerate(PANDUAN_SECTIONS):
+            mark = f"sec{i}"
+            t.mark_set(mark, "end-1c")
+            # Gravitasi "left": judul disisipkan TEPAT di posisi mark, jadi
+            # mark tetap menempel di awal baris judul (bukan terdorong ke
+            # baris kosong sesudahnya — penyebab lompatan tidak sesuai).
+            t.mark_gravity(mark, "left")
+            self._marks.append((sec["judul"], mark))
+            t.insert("end", sec["judul"] + "\n", "h1")
+            for kind, txt in sec["isi"]:
+                if kind == "b":
+                    t.insert("end", "•  ", "b")
+                    t.insert("end", txt + "\n", "b")
+                elif kind == "pre":
+                    for line in txt.splitlines():
+                        t.insert("end", line + "\n", "pre")
+                else:
+                    t.insert("end", txt + "\n", self.KIND_TAGS.get(kind, "p"))
+        t.delete("end-1c", "end")  # buang newline terakhir supaya rapi
+        t.configure(state="disabled")
+
+    def _jump(self, _event=None):
+        """Gulirkan tampilan supaya judul bagian terpilih berada di PUNCAK view.
+
+        yview_pickplace sengaja tidak dipakai: ia hanya menjamin mark terlihat
+        (tidak menggerakkan apa pun bila bagian tujuan kebetulan sudah tampak,
+        kadang menaruhnya di tepi bawah) — itulah kenapa lompatan dulu terasa
+        acak. Trik di sini: see() menjamin baris ter-render, lalu dlineinfo()
+        mengukur posisi y baris judul di jendela, dan yview_scroll menggeser
+        persis sebanyak itu sehingga judul selalu mendarat di atas.
+        """
+        judul = self.cb_jump.get()
+        for j, mark in self._marks:
+            if j == judul:
+                t = self.text
+                t.update_idletasks()
+                t.see(mark)
+                info = t.dlineinfo(mark)  # None hanya bila baris tak ter-render
+                if info:
+                    t.yview_scroll(int(info[1]), "pixels")
+                return
