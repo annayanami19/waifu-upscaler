@@ -55,6 +55,7 @@ class ModelSpec:
 
     label: str
     options: Dict[int, Tuple[int, ...]]  # tuple kosong = model tanpa opsi denoise
+    category: str = "anime"  # "anime" (ilustrasi/anime) | "foto" (real manusia/objek)
 
     @property
     def scales(self) -> Tuple[int, ...]:
@@ -107,6 +108,8 @@ REALESRGAN_LABELS = {
     "realesrgan-x4plus-anime": "x4plus-anime · kualitas tinggi",
     "realesrgan-x4plus": "x4plus · umum / foto",
     "realesrnet-x4plus": "realesrnet-x4plus · restorasi foto",
+    "upscayl-lite-4x": "Upscayl Lite · foto cepat",
+    "upscayl-standard-4x": "Upscayl Standard · foto umum",
 }
 KNOWN_MODEL_LABELS = {
     "models-cunet": "CUNET · kualitas terbaik (anime)",
@@ -116,6 +119,39 @@ KNOWN_MODEL_LABELS = {
     "models-pro": "PRO · paling tajam",
     "models-nose": "NOSE · denoise saja",
 }
+
+# Kategori "foto": model yang dilatih untuk foto real manusia/objek
+# (bukan ilustrasi/anime). Dipakai filter kategori di UI.
+FOTO_MODEL_IDS = {  # realesrgan: id model (nama file .param tanpa ekstensi)
+    "realesrgan-x4plus",
+    "realesrnet-x4plus",
+    "upscayl-lite-4x",
+    "upscayl-standard-4x",
+}
+FOTO_FOLDER_IDS = {"models-upconv_7_photo"}  # waifu2x: nama subfolder model
+
+# Katalog model foto yang bisa diunduh lewat dialog "Kelola model foto".
+# File .param/.bin ncnn kompatibel dengan binary realesrgan-ncnn-vulkan
+# official yang sudah ada di tools/ (konvensi input blob "data" — sama seperti
+# model bawaan). Sumber: repo resmi upscayl/upscayl, di-pin ke satu commit
+# supaya file yang diterima tidak pernah berubah tanpa sadar.
+PHOTO_MODEL_REF = "a00d55fee90e0f9435d5eaa86e76700df8199af8"  # upscayl ≥ v2.15.1
+PHOTO_CATALOG = {
+    "upscayl-lite-4x": {
+        "bin_mb": 2.4,
+        "deskripsi": "Foto cepat & ringan — paling hemat, hasil mulus.",
+    },
+    "upscayl-standard-4x": {
+        "bin_mb": 33.4,
+        "deskripsi": "Foto umum berkualitas — seimbang untuk manusia & objek.",
+    },
+}
+
+
+def photo_model_files_ready(model_id: str) -> bool:
+    """True bila pasangan .param + .bin model katalog sudah ada di tools/models/."""
+    base = TOOLS_DIR / "models" / model_id
+    return base.with_suffix(".param").is_file() and base.with_suffix(".bin").is_file()
 
 _EXE_CACHE: Dict[str, Optional[Path]] = {}
 
@@ -217,7 +253,10 @@ def list_models(engine: Engine) -> Dict[str, ModelSpec]:
     models: Dict[str, ModelSpec] = {}
     if engine.key == "realesrgan":
         for name, options in sorted(_scan_realesrgan_models(exe.parent / "models").items()):
-            models[name] = ModelSpec(REALESRGAN_LABELS.get(name, name), options)
+            models[name] = ModelSpec(
+                REALESRGAN_LABELS.get(name, name), options,
+                category="foto" if name in FOTO_MODEL_IDS else "anime",
+            )
     else:
         scan = _scan_waifu2x_folder if engine.key == "waifu2x" else _scan_realcugan_folder
         for child in sorted(exe.parent.iterdir()):
@@ -226,7 +265,10 @@ def list_models(engine: Engine) -> Dict[str, ModelSpec]:
             options = scan(child)
             if not options:
                 continue  # folder tak dikenali — jangan ditawarkan
-            models[child.name] = ModelSpec(KNOWN_MODEL_LABELS.get(child.name, child.name), options)
+            models[child.name] = ModelSpec(
+                KNOWN_MODEL_LABELS.get(child.name, child.name), options,
+                category="foto" if child.name in FOTO_FOLDER_IDS else "anime",
+            )
 
     if not models:
         models = {
@@ -327,6 +369,23 @@ def enumerate_gpus(exe: Path) -> list:
     return gpus
 
 
+def resolve_pass_scale(engine_key: str, spec: Optional["ModelSpec"],
+                       scale: int) -> int:
+    """Skala yang dikirim ke binary untuk kombinasi terpilih.
+
+    Binary realesrgan-ncnn-vulkan official hanya mendukung skala native model —
+    tidak punya emulasi "Downscayl" milik fork upscayl-bin. Untuk model
+    fixed-4x yang diminta pada skala 1x-3x, inferensi dijalankan penuh di
+    skala native, lalu hasilnya diturunkan di Python (downscale_png) — pola
+    yang sama dengan Upscayl.
+    """
+    if engine_key != "realesrgan" or spec is None:
+        return scale
+    if scale in spec.options:
+        return scale
+    return max(spec.scales) if spec.scales else scale
+
+
 def build_commands(
     engine_key: str,
     model_id: str,
@@ -337,6 +396,7 @@ def build_commands(
     gpu: str,
     src: Path,
     dst: Path,
+    spec: Optional["ModelSpec"] = None,
 ) -> list:
     """Susun argv untuk engine terpilih. Output engine selalu PNG (re-encode dilakukan GUI)."""
     engine = ENGINES[engine_key]
@@ -359,7 +419,7 @@ def build_commands(
                 "-i", str(src),
                 "-o", str(dst),
                 "-n", model_id,
-                "-s", str(scale),
+                "-s", str(resolve_pass_scale(engine_key, spec, scale)),
                 "-m", str(model_dir),
                 *common,
             ]
@@ -443,6 +503,25 @@ def prepare_input(src: Path, tmpdir: Path) -> Path:
         img = img.convert("RGBA" if "A" in img.getbands() or img.mode == "P" else "RGB")
     img.save(out, "PNG")
     return out
+
+
+def downscale_png(png_path: Path, factor: float) -> None:
+    """Turunkan ukuran PNG hasil engine sebesar factor (0 < factor < 1).
+
+    Emulasi skala ala Upscayl ("Downscayl"): inferensi dijalankan di skala
+    native model, hasil 4x diturunkan LANCZOS ke skala yang diminta user.
+    Disimpan in-place; tidak mengubah format (tetap PNG untuk re-encode GUI).
+    """
+    if not (0.0 < factor < 1.0):
+        return
+    img = Image.open(png_path)
+    img.load()
+    w = max(1, round(img.width * factor))
+    h = max(1, round(img.height * factor))
+    if (w, h) == img.size:
+        return
+    img = img.resize((w, h), Image.Resampling.LANCZOS)
+    img.save(png_path, "PNG")
 
 
 def encode_output(png_path: Path, out: Path, fmt: str, quality: int) -> None:
